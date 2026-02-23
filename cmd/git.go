@@ -8,6 +8,7 @@ import (
 	"aliz/lz/internal/git"
 	"aliz/lz/internal/ui"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -37,11 +38,10 @@ func RunGit() error {
 		entries[i] = entry{repo: r, status: git.GetStatus(r.Path)}
 	}
 
-	// Compute dynamic width from content.
-	maxW := 0
+	// Compute dynamic width from header lines only (file paths hang below).
+	maxW := 60
 	for _, e := range entries {
-		w := lineWidth(e.repo.Name, e.status)
-		if w > maxW {
+		if w := lineWidth(e.repo.Name, e.status); w > maxW {
 			maxW = w
 		}
 	}
@@ -77,7 +77,9 @@ func RunGit() error {
 				renderRight(e.status, false),
 			)
 			for _, f := range e.status.Files {
-				fmt.Printf("   %s\n", renderFile(f, maxW-3))
+				for _, line := range renderFile(f) {
+					fmt.Printf("   %s\n", line)
+				}
 			}
 		}
 		prevDirty = !e.status.IsClean
@@ -143,46 +145,42 @@ func renderRight(s git.RepoStatus, clean bool) string {
 	return strings.Join(parts, " ")
 }
 
-// renderFile renders a single porcelain status line with color.
-func renderFile(f git.FileStatus, maxFileW int) string {
-	file := f.File
+// renderFile renders a porcelain status entry. Renames produce two lines.
+func renderFile(f git.FileStatus) []string {
+	ch, style := fileSign(f.XY)
+	render := style.Render
 
-	// Truncate rename paths: "old -> new" → "…/old → …/new"
-	if strings.Contains(file, " -> ") {
-		parts := strings.SplitN(file, " -> ", 2)
-		half := (maxFileW - 4) / 2 // 4 for " → "
-		if half < 8 {
-			half = 8
+	if strings.Contains(f.File, " -> ") {
+		parts := strings.SplitN(f.File, " -> ", 2)
+		return []string{
+			ui.Faint.Render(string(ch) + " " + parts[0]),
+			render("→ " + parts[1]),
 		}
-		old := ui.Truncate(parts[0], half)
-		newF := ui.Truncate(parts[1], half)
-		file = old + " → " + newF
-	} else if runewidth.StringWidth(file) > maxFileW {
-		file = ui.Truncate(file, maxFileW)
 	}
 
-	label := fmt.Sprintf("%s %s", f.XY, file)
+	return []string{render(string(ch) + " " + f.File)}
+}
 
-	switch f.XY {
+func fileSign(xy string) (rune, lipgloss.Style) {
+	switch xy {
 	case "??":
-		return ui.Red.Render(label)
-	case " M":
-		return ui.Yellow.Render(label)
-	case "M ":
-		return ui.Green.Render(label)
-	case "A ":
-		return ui.Green.Render(label)
+		return '?', ui.Red
+	case " M", "M ":
+		if xy[0] == 'M' {
+			return 'M', ui.Green
+		}
+		return 'M', ui.Yellow
 	case "MM":
-		return ui.Cyan.Render(label)
-	case " D":
-		return ui.Red.Render(label)
-	case "D ":
-		return ui.Red.Render(label)
-	case "R ":
-		return ui.Green.Render(label)
+		return 'M', ui.Cyan
+	case "A ":
+		return 'A', ui.Green
 	case "AM":
-		return ui.Cyan.Render(label)
+		return 'A', ui.Cyan
+	case " D", "D ":
+		return 'D', ui.Red
+	case "R ":
+		return 'R', ui.Green
 	default:
-		return ui.Faint.Render(label)
+		return '~', ui.Faint
 	}
 }
