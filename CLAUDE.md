@@ -35,7 +35,7 @@ internal/
     format.go        Formatting helpers (relative time, padding)
 ```
 
-**Task discovery** (`tsk.go`): walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` to find project root. Tasks have three states: InProgress (`current.md`), Todo (`todo/*.md`), Done (`done/*.md`).
+**Task discovery** (`tsk.go`): walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` to find project root. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`).
 
 **Git status** (`git.go`): accepts repos from stdin (tab-separated name/path) or auto-discovers them. Runs git porcelain commands via `exec.Command` with `-C <dir>`.
 

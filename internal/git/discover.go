@@ -16,8 +16,8 @@ type Repo struct {
 // Discover finds git repos. If stdin is a pipe, reads name\tpath pairs.
 // Otherwise scans dir and 1-level children for .git/ dirs.
 func Discover(dir string) ([]Repo, error) {
-	fi, _ := os.Stdin.Stat()
-	if fi.Mode()&os.ModeCharDevice == 0 {
+	fi, err := os.Stdin.Stat()
+	if err == nil && fi.Mode()&os.ModeCharDevice == 0 {
 		return discoverFromStdin(dir)
 	}
 	return discoverFromDir(dir)
