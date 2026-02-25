@@ -54,6 +54,21 @@ Interactive BubbleTea TUI for browsing `.tasks/` directories. Walks up from `cwd
 ↑/↓ navigate · → open · e edit · tab filter · q quit
 ```
 
+**Flags:**
+
+- `--list`, `-l` — non-interactive mode, prints tasks to stdout (useful for scripts and AI sessions)
+- `--all`, `-a` — include Done and Backlog tasks (default shows only Active)
+
+```
+$ lz t --list
+ ▶ In Progress
+  myapp   Migrate auth to OAuth2 ·········································· 1d
+
+ ○ Todo
+  myapp   Add rate limiting to public endpoints ··························· 2d
+  infra   Upgrade Postgres from 15 to 17 ·································· 2w
+```
+
 Tasks live as markdown files:
 - `current.md` — in progress
 - `todo/*.md` — planned

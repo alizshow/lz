@@ -23,6 +23,7 @@ type Status int
 const (
 	InProgress Status = iota
 	Todo
+	Backlog
 	Done
 )
 
@@ -32,6 +33,8 @@ func (s Status) String() string {
 		return "In Progress"
 	case Todo:
 		return "Todo"
+	case Backlog:
+		return "Backlog"
 	case Done:
 		return "Done"
 	}
@@ -43,6 +46,7 @@ type Filter int
 
 const (
 	FilterActive Filter = iota
+	FilterBacklog
 	FilterDone
 	FilterAll
 )
@@ -57,13 +61,139 @@ type Task struct {
 	ModTime  time.Time
 }
 
-// RunTsk launches the task browser TUI.
+// RunTsk launches the task browser TUI, or prints a list with --list.
 func RunTsk() error {
+	var listMode, showAll bool
+	for _, arg := range os.Args[2:] {
+		switch arg {
+		case "--list", "-l":
+			listMode = true
+		case "--all", "-a":
+			showAll = true
+		}
+	}
+
+	if listMode {
+		return runTskList(showAll)
+	}
+
 	root := findRoot()
 	m := initialModel(root)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+// runTskList prints tasks to stdout (non-interactive mode).
+func runTskList(showAll bool) error {
+	root := findRoot()
+	tasks := discoverTasks(root)
+
+	filter := FilterActive
+	if showAll {
+		filter = FilterAll
+	}
+	m := tskModel{allTasks: tasks, filter: filter}
+	m.applyFilter()
+
+	if len(m.filtered) == 0 {
+		fmt.Println("No tasks found.")
+		return nil
+	}
+
+	// Group by status.
+	type group struct {
+		status Status
+		tasks  []Task
+	}
+	groups := make(map[Status]*group)
+	var order []Status
+	for _, t := range m.filtered {
+		g, ok := groups[t.Status]
+		if !ok {
+			g = &group{status: t.Status}
+			groups[t.Status] = g
+			order = append(order, t.Status)
+		}
+		g.tasks = append(g.tasks, t)
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+
+	// Compute max widths for alignment.
+	maxProjLen := 0
+	for _, t := range m.filtered {
+		if len(t.Project) > maxProjLen {
+			maxProjLen = len(t.Project)
+		}
+	}
+	maxTitleW := 0
+	maxAgeLen := 0
+	for _, t := range m.filtered {
+		tw := runewidth.StringWidth(t.Title)
+		if tw > maxTitleW {
+			maxTitleW = tw
+		}
+		al := len(ui.RelativeTime(t.ModTime))
+		if al > maxAgeLen {
+			maxAgeLen = al
+		}
+	}
+	prefixW := 2 + maxProjLen + 2 // "  proj  "
+	lineW := prefixW + maxTitleW + 3 + 1 + maxAgeLen
+
+	for _, status := range order {
+		g := groups[status]
+
+		var headerStyle lipgloss.Style
+		var icon string
+		switch status {
+		case InProgress:
+			headerStyle = styleInProgress
+			icon = "▶"
+		case Todo:
+			headerStyle = lipgloss.NewStyle().Bold(true)
+			icon = "○"
+		case Backlog:
+			headerStyle = ui.Faint.Bold(true)
+			icon = "◇"
+		case Done:
+			headerStyle = styleDone.Bold(true)
+			icon = "✓"
+		}
+		fmt.Println(headerStyle.Render(fmt.Sprintf(" %s %s", icon, status.String())))
+
+		for _, t := range g.tasks {
+			var taskStyle lipgloss.Style
+			switch t.Status {
+			case InProgress:
+				taskStyle = styleInProgress
+			case Todo:
+				taskStyle = styleTodo
+			case Backlog:
+				taskStyle = ui.Faint
+			case Done:
+				taskStyle = styleDone
+			}
+
+			projPadded := fmt.Sprintf("%-*s", maxProjLen, t.Project)
+			age := ui.RelativeTime(t.ModTime)
+			titleW := runewidth.StringWidth(t.Title)
+			dotsAvail := lineW - prefixW - titleW - 1 - len(age)
+			if dotsAvail < 2 {
+				dotsAvail = 2
+			}
+			dots := " " + strings.Repeat("·", dotsAvail-1)
+
+			fmt.Printf("  %s  %s%s %s\n",
+				styleProject.Render(projPadded),
+				taskStyle.Render(t.Title),
+				styleDots.Render(dots),
+				styleAge.Render(age),
+			)
+		}
+		fmt.Println()
+	}
+	return nil
 }
 
 func findRoot() string {
@@ -121,16 +251,40 @@ func discoverTasks(root string) []Task {
 	for _, p := range projects {
 		tasksDir := filepath.Join(p.dir, ".tasks")
 
-		cur := filepath.Join(tasksDir, "current.md")
-		if info, err := os.Stat(cur); err == nil {
-			tasks = append(tasks, Task{
-				Title:    extractTitle(cur),
-				Filename: "current.md",
-				Project:  p.name,
-				Status:   InProgress,
-				Path:     cur,
-				ModTime:  info.ModTime(),
-			})
+		currentDir := filepath.Join(tasksDir, "current")
+		if currentFiles, err := os.ReadDir(currentDir); err == nil {
+			for _, f := range currentFiles {
+				if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
+					continue
+				}
+				fp := filepath.Join(currentDir, f.Name())
+				info, err := f.Info()
+				var mt time.Time
+				if err == nil {
+					mt = info.ModTime()
+				}
+				tasks = append(tasks, Task{
+					Title:    extractTitle(fp),
+					Filename: f.Name(),
+					Project:  p.name,
+					Status:   InProgress,
+					Path:     fp,
+					ModTime:  mt,
+				})
+			}
+		} else {
+			// Fallback: support legacy current.md single file
+			cur := filepath.Join(tasksDir, "current.md")
+			if info, err := os.Stat(cur); err == nil {
+				tasks = append(tasks, Task{
+					Title:    extractTitle(cur),
+					Filename: "current.md",
+					Project:  p.name,
+					Status:   InProgress,
+					Path:     cur,
+					ModTime:  info.ModTime(),
+				})
+			}
 		}
 
 		todoDir := filepath.Join(tasksDir, "todo")
@@ -150,6 +304,29 @@ func discoverTasks(root string) []Task {
 					Filename: f.Name(),
 					Project:  p.name,
 					Status:   Todo,
+					Path:     fp,
+					ModTime:  mt,
+				})
+			}
+		}
+
+		backlogDir := filepath.Join(tasksDir, "backlog")
+		if backlogFiles, err := os.ReadDir(backlogDir); err == nil {
+			for _, f := range backlogFiles {
+				if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
+					continue
+				}
+				fp := filepath.Join(backlogDir, f.Name())
+				info, err := f.Info()
+				var mt time.Time
+				if err == nil {
+					mt = info.ModTime()
+				}
+				tasks = append(tasks, Task{
+					Title:    extractTitle(fp),
+					Filename: f.Name(),
+					Project:  p.name,
+					Status:   Backlog,
 					Path:     fp,
 					ModTime:  mt,
 				})
@@ -245,8 +422,11 @@ func initialModel(root string) tskModel {
 
 func (m *tskModel) applyFilter() {
 	m.filtered = nil
-	for _, status := range []Status{InProgress, Todo, Done} {
-		if m.filter == FilterActive && status == Done {
+	for _, status := range []Status{InProgress, Todo, Backlog, Done} {
+		if m.filter == FilterActive && (status == Done || status == Backlog) {
+			continue
+		}
+		if m.filter == FilterBacklog && status != Backlog {
 			continue
 		}
 		if m.filter == FilterDone && status != Done {
@@ -319,7 +499,7 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 		}
 	case "tab":
-		m.filter = (m.filter + 1) % 3
+		m.filter = (m.filter + 1) % 4
 		m.applyFilter()
 	case "enter", "right", "l":
 		if len(m.filtered) > 0 {
@@ -386,6 +566,7 @@ func (m tskModel) viewList() string {
 		filter Filter
 	}{
 		{"Active", FilterActive},
+		{"Backlog", FilterBacklog},
 		{"Done", FilterDone},
 		{"All", FilterAll},
 	}
@@ -464,6 +645,9 @@ func (m tskModel) viewList() string {
 		case Todo:
 			headerStyle = lipgloss.NewStyle().Bold(true)
 			icon = "○"
+		case Backlog:
+			headerStyle = ui.Faint.Bold(true)
+			icon = "◇"
 		case Done:
 			headerStyle = styleDone.Bold(true)
 			icon = "✓"
@@ -477,6 +661,8 @@ func (m tskModel) viewList() string {
 				taskStyle = styleInProgress
 			case Todo:
 				taskStyle = styleTodo
+			case Backlog:
+				taskStyle = ui.Faint
 			case Done:
 				taskStyle = styleDone
 			}
