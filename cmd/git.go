@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"cmp"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 
 	"aliz/lz/internal/git"
 	"aliz/lz/internal/ui"
@@ -28,54 +31,143 @@ func RunGit() error {
 		return nil
 	}
 
-	// Gather status for all repos.
+	// Gather status for all repos in parallel.
 	type entry struct {
 		repo   git.Repo
 		status git.RepoStatus
 	}
 	entries := make([]entry, len(repos))
+	var wg sync.WaitGroup
+	wg.Add(len(repos))
 	for i, r := range repos {
-		entries[i] = entry{repo: r, status: git.GetStatus(r.Path)}
+		entries[i].repo = r
+		go func() {
+			defer wg.Done()
+			entries[i].status = git.GetStatus(r.Path)
+		}()
+	}
+	wg.Wait()
+
+	// Sort: dirty repos first, then by most recent commit.
+	slices.SortFunc(entries, func(a, b entry) int {
+		da, db := !a.status.IsClean, !b.status.IsClean
+		if da != db {
+			if da {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(b.status.Age.Unix(), a.status.Age.Unix())
+	})
+
+	// Compute per-entry column values (plain text).
+	// Columns: branch, ahead(or ∅), behind, stash, age, tag
+	type rightCols struct {
+		branch, ahead, behind, stash, age, tag string
+	}
+	cols := make([]rightCols, len(entries))
+	for i, e := range entries {
+		s := e.status
+		c := &cols[i]
+		c.branch = s.Branch
+		if !s.HasUpstream {
+			c.ahead = "∅"
+		} else if s.Ahead > 0 {
+			c.ahead = fmt.Sprintf("↑%d", s.Ahead)
+		}
+		if s.Behind > 0 {
+			c.behind = fmt.Sprintf("↓%d", s.Behind)
+		}
+		if s.Stash > 0 {
+			c.stash = fmt.Sprintf("≡%d", s.Stash)
+		}
+		c.age = ui.RelativeTime(s.Age)
+		if s.Tag != "" {
+			c.tag = "@" + s.Tag
+		}
 	}
 
-	// Compute dynamic width from header lines only (file paths hang below).
-	maxW := 60
+	// Max column widths: branch[0] age[1] ahead[2] behind[3] stash[4] tag[5]
+	var cw [6]int
+	for _, c := range cols {
+		for j, v := range [6]string{c.branch, c.age, c.ahead, c.behind, c.stash, c.tag} {
+			cw[j] = max(cw[j], runewidth.StringWidth(v))
+		}
+	}
+
+	// Pad helper: styled text right-padded with spaces to fixed width.
+	padStyled := func(styled, plain string, maxW int) string {
+		return styled + strings.Repeat(" ", maxW-runewidth.StringWidth(plain))
+	}
+
+	// renderExtra returns padded styled columns after the primary span (branch + age).
+	renderExtra := func(c rightCols) string {
+		var parts []string
+		if cw[2] > 0 {
+			var s string
+			if c.ahead == "∅" {
+				s = ui.Faint.Render(c.ahead)
+			} else {
+				s = ui.Green.Render(c.ahead)
+			}
+			parts = append(parts, padStyled(s, c.ahead, cw[2]))
+		}
+		if cw[3] > 0 {
+			parts = append(parts, padStyled(ui.Red.Render(c.behind), c.behind, cw[3]))
+		}
+		if cw[4] > 0 {
+			parts = append(parts, padStyled(c.stash, c.stash, cw[4]))
+		}
+		if cw[5] > 0 {
+			parts = append(parts, padStyled(ui.Yellow.Render(c.tag), c.tag, cw[5]))
+		}
+		return strings.Join(parts, " ")
+	}
+
+	// Primary span: left + dots + branch + age. File paths influence this width.
+	maxLeftW := 0
 	for _, e := range entries {
-		if w := lineWidth(e.repo.Name, e.status); w > maxW {
-			maxW = w
+		maxLeftW = max(maxLeftW, runewidth.StringWidth(fmt.Sprintf("── %s ", e.repo.Name)))
+	}
+	primaryW := max(60, maxLeftW+3+1+cw[0]+1+cw[1]) // left + min_dots + " " + branch + " " + age
+	for _, e := range entries {
+		for _, f := range e.status.Files {
+			primaryW = max(primaryW, 5+runewidth.StringWidth(f.File)) // "   X " + path
 		}
 	}
 
 	// Render.
 	prevDirty := false
 	for i, e := range entries {
-		// Spacing: compact clean repos together, breathe around dirty.
 		if i > 0 && (prevDirty || !e.status.IsClean) {
 			fmt.Println()
 		}
 
-		right := buildRight(e.status)
 		left := fmt.Sprintf("── %s ", e.repo.Name)
-		leftW := runewidth.StringWidth(left)
-		rightW := runewidth.StringWidth(right)
-		pad := maxW - leftW - rightW
-		if pad < 3 {
-			pad = 3
-		}
-		dots := strings.Repeat("·", pad)
+		branchW := runewidth.StringWidth(cols[i].branch)
+		dots := strings.Repeat("·", primaryW-runewidth.StringWidth(left)-branchW-cw[1]-2)
 
+		var branchStyled string
 		if e.status.IsClean {
-			fmt.Printf("%s%s %s\n",
-				ui.Faint.Render("── ")+ui.Bold.Render(e.repo.Name)+" ",
-				ui.Faint.Render(dots),
-				renderRight(e.status, true),
-			)
+			branchStyled = cols[i].branch
 		} else {
-			fmt.Printf("%s%s %s\n",
-				ui.Faint.Render("── ")+ui.Bold.Render(e.repo.Name)+" ",
-				ui.Faint.Render(dots),
-				renderRight(e.status, false),
-			)
+			branchStyled = ui.Cyan.Render(cols[i].branch)
+		}
+
+		age := padStyled(ui.Faint.Render(cols[i].age), cols[i].age, cw[1])
+		extra := renderExtra(cols[i])
+
+		fmt.Printf("%s%s %s %s",
+			ui.Faint.Render("── ")+ui.Bold.Render(e.repo.Name)+" ",
+			ui.Faint.Render(dots),
+			branchStyled,
+			age,
+		)
+		if extra != "" {
+			fmt.Printf(" %s", extra)
+		}
+		fmt.Println()
+		if !e.status.IsClean {
 			for _, f := range e.status.Files {
 				for _, line := range renderFile(f) {
 					fmt.Printf("   %s\n", line)
@@ -86,63 +178,6 @@ func RunGit() error {
 	}
 
 	return nil
-}
-
-// lineWidth computes the display width of a repo's header line.
-func lineWidth(name string, s git.RepoStatus) int {
-	left := fmt.Sprintf("── %s ", name)
-	right := buildRight(s)
-	return runewidth.StringWidth(left) + 3 + runewidth.StringWidth(right) // 3 = min dots
-}
-
-// buildRight builds the plain-text right side for width calculation.
-func buildRight(s git.RepoStatus) string {
-	var parts []string
-	parts = append(parts, s.Branch)
-	if s.Tag != "" {
-		parts = append(parts, "@"+s.Tag)
-	}
-	if s.Ahead > 0 {
-		parts = append(parts, fmt.Sprintf("↑%d", s.Ahead))
-	}
-	if s.Behind > 0 {
-		parts = append(parts, fmt.Sprintf("↓%d", s.Behind))
-	}
-	if s.Stash > 0 {
-		parts = append(parts, fmt.Sprintf("≡%d", s.Stash))
-	}
-	if s.IsClean {
-		parts = append(parts, "✓")
-	}
-	parts = append(parts, " "+ui.RelativeTime(s.Age))
-	return strings.Join(parts, " ")
-}
-
-// renderRight builds the colored right side.
-func renderRight(s git.RepoStatus, clean bool) string {
-	var parts []string
-	if clean {
-		parts = append(parts, ui.Faint.Render(s.Branch))
-	} else {
-		parts = append(parts, ui.Cyan.Render(s.Branch))
-	}
-	if s.Tag != "" {
-		parts = append(parts, ui.Yellow.Render("@"+s.Tag))
-	}
-	if s.Ahead > 0 {
-		parts = append(parts, fmt.Sprintf("↑%d", s.Ahead))
-	}
-	if s.Behind > 0 {
-		parts = append(parts, fmt.Sprintf("↓%d", s.Behind))
-	}
-	if s.Stash > 0 {
-		parts = append(parts, fmt.Sprintf("≡%d", s.Stash))
-	}
-	if clean {
-		parts = append(parts, ui.Green.Render("✓"))
-	}
-	parts = append(parts, " "+ui.Faint.Render(ui.RelativeTime(s.Age)))
-	return strings.Join(parts, " ")
 }
 
 // renderFile renders a porcelain status entry. Renames produce two lines.

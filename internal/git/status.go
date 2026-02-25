@@ -9,14 +9,15 @@ import (
 
 // RepoStatus holds parsed git state for a single repo.
 type RepoStatus struct {
-	Branch  string
-	Tag     string
-	Ahead   int
-	Behind  int
-	Stash   int
-	Age     time.Time // last commit time
-	Files   []FileStatus
-	IsClean bool
+	Branch      string
+	Tag         string
+	Ahead       int
+	Behind      int
+	Stash       int
+	HasUpstream bool
+	Age         time.Time // last commit time
+	Files       []FileStatus
+	IsClean     bool
 }
 
 // FileStatus is a single porcelain status entry.
@@ -40,7 +41,8 @@ func GetStatus(dir string) RepoStatus {
 
 	// ahead/behind
 	upstream := gitLine(dir, "rev-parse", "--abbrev-ref", "@{upstream}")
-	if upstream != "" {
+	s.HasUpstream = upstream != ""
+	if s.HasUpstream {
 		if v := gitLine(dir, "rev-list", "--count", "@{upstream}..HEAD"); v != "" {
 			s.Ahead, _ = strconv.Atoi(v)
 		}
