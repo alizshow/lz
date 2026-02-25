@@ -73,7 +73,7 @@ func RunTsk() error {
 		}
 	}
 
-	if listMode {
+	if listMode || showAll {
 		return runTskList(showAll)
 	}
 
