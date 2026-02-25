@@ -184,11 +184,12 @@ func runTskList(showAll bool) error {
 			}
 			dots := " " + strings.Repeat("·", dotsAvail-1)
 
-			fmt.Printf("  %s  %s%s %s\n",
+			fmt.Printf("  %s  %s%s %s  %s\n",
 				styleProject.Render(projPadded),
 				taskStyle.Render(t.Title),
 				styleDots.Render(dots),
 				styleAge.Render(age),
+				ui.Faint.Render(t.Path),
 			)
 		}
 		fmt.Println()
