@@ -48,7 +48,7 @@ func RunGit() error {
 	}
 	wg.Wait()
 
-	// Sort: dirty repos first, then by most recent commit.
+	// Sort: dirty repos first, then alphabetically by name.
 	slices.SortFunc(entries, func(a, b entry) int {
 		da, db := !a.status.IsClean, !b.status.IsClean
 		if da != db {
@@ -57,7 +57,7 @@ func RunGit() error {
 			}
 			return 1
 		}
-		return cmp.Compare(b.status.Age.Unix(), a.status.Age.Unix())
+		return cmp.Compare(a.repo.Name, b.repo.Name)
 	})
 
 	// Compute per-entry column values (plain text).
