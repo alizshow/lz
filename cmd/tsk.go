@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -117,7 +117,7 @@ func runTskList(showAll bool) error {
 		}
 		g.tasks = append(g.tasks, t)
 	}
-	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	slices.Sort(order)
 
 	// Compute max widths for alignment.
 	maxProjLen := 0
@@ -178,10 +178,7 @@ func runTskList(showAll bool) error {
 			projPadded := fmt.Sprintf("%-*s", maxProjLen, t.Project)
 			age := ui.RelativeTime(t.ModTime)
 			titleW := runewidth.StringWidth(t.Title)
-			dotsAvail := lineW - prefixW - titleW - 1 - len(age)
-			if dotsAvail < 2 {
-				dotsAvail = 2
-			}
+			dotsAvail := max(lineW-prefixW-titleW-1-len(age), 2)
 			dots := " " + strings.Repeat("·", dotsAvail-1)
 
 			fmt.Printf("  %s  %s%s %s  %s\n",
@@ -371,11 +368,11 @@ func extractTitle(path string) string {
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "## ") {
-			return strings.TrimPrefix(line, "## ")
+		if t, ok := strings.CutPrefix(line, "## "); ok {
+			return t
 		}
-		if strings.HasPrefix(line, "# ") {
-			return strings.TrimPrefix(line, "# ")
+		if t, ok := strings.CutPrefix(line, "# "); ok {
+			return t
 		}
 	}
 	return strings.TrimSuffix(filepath.Base(path), ".md")
@@ -433,10 +430,16 @@ func (m *tskModel) applyFilter() {
 		if m.filter == FilterDone && status != Done {
 			continue
 		}
+		start := len(m.filtered)
 		for _, t := range m.allTasks {
 			if t.Status == status {
 				m.filtered = append(m.filtered, t)
 			}
+		}
+		if status == Done {
+			slices.SortFunc(m.filtered[start:], func(a, b Task) int {
+				return b.ModTime.Compare(a.ModTime)
+			})
 		}
 	}
 	m.cursor = 0
@@ -610,7 +613,7 @@ func (m tskModel) viewList() string {
 		}{t, i})
 	}
 
-	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	slices.Sort(order)
 
 	maxProjLen := 0
 	for _, t := range m.filtered {
@@ -672,10 +675,7 @@ func (m tskModel) viewList() string {
 			age := ui.RelativeTime(entry.task.ModTime)
 
 			titleW := runewidth.StringWidth(entry.task.Title)
-			dotsAvail := lineW - prefixW - titleW - 1 - len(age)
-			if dotsAvail < 2 {
-				dotsAvail = 2
-			}
+			dotsAvail := max(lineW-prefixW-titleW-1-len(age), 2)
 			dots := " " + strings.Repeat("·", dotsAvail-1)
 
 			cursor := "  "
@@ -757,18 +757,10 @@ func (m tskModel) viewDetail() string {
 		vh = 20
 	}
 
-	maxScroll := len(lines) - vh
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if m.scroll > maxScroll {
-		m.scroll = maxScroll
-	}
+	maxScroll := max(len(lines)-vh, 0)
+	m.scroll = min(m.scroll, maxScroll)
 
-	end := m.scroll + vh
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(m.scroll+vh, len(lines))
 
 	visible := lines[m.scroll:end]
 	for _, l := range visible {
