@@ -189,7 +189,7 @@ func runTskList(showAll bool) error {
 				taskStyle.Render(t.Title),
 				styleDots.Render(dots),
 				styleAge.Render(age),
-				ui.Faint.Render(t.Path),
+				ui.Faint.Render(strings.TrimPrefix(t.Path, root+"/")),
 			)
 		}
 		fmt.Println()
