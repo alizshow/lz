@@ -33,6 +33,10 @@ func RunGit() error {
 	return err
 }
 
+// ── Config ──
+
+const defaultHistoryLimit = 5
+
 // ── Shared data gathering ──
 
 type repoEntry struct {
@@ -59,7 +63,7 @@ func gatherEntries() ([]repoEntry, error) {
 		go func() {
 			defer wg.Done()
 			entries[i].status = git.GetStatus(r.Path)
-			entries[i].commits = git.RecentCommits(r.Path, 10)
+			entries[i].commits = git.RecentCommits(r.Path, defaultHistoryLimit)
 		}()
 	}
 	wg.Wait()
@@ -214,6 +218,7 @@ type gitTab int
 const (
 	tabStatus  gitTab = iota
 	tabCommits
+	tabStash
 )
 
 type rowKind int
@@ -222,6 +227,7 @@ const (
 	rowRepo rowKind = iota
 	rowFile
 	rowCommit
+	rowStash
 )
 
 type row struct {
@@ -234,6 +240,8 @@ type row struct {
 	commitHash string
 	commitMsg  string
 	commitTime time.Time
+	stashIndex string
+	stashMsg   string
 }
 
 type gitModel struct {
@@ -244,8 +252,9 @@ type gitModel struct {
 	viewing bool
 	detail    ui.Scroll
 	diffLines []string
-	width   int
-	height  int
+	contentW int // natural width computed from row content
+	width    int
+	height   int
 }
 
 func initialGitModel() (gitModel, error) {
@@ -255,6 +264,7 @@ func initialGitModel() (gitModel, error) {
 	}
 	m := gitModel{entries: entries, tab: tabStatus}
 	m.rebuildRows()
+	m.cursor = m.firstNonRepo()
 	return m, nil
 }
 
@@ -264,7 +274,55 @@ func (m *gitModel) rebuildRows() {
 		m.rows = flattenRows(m.entries)
 	case tabCommits:
 		m.rows = flattenCommitRows(m.entries)
+	case tabStash:
+		m.rows = flattenStashRows(m.entries)
 	}
+	m.contentW = m.computeContentWidth()
+}
+
+// computeContentWidth returns the natural width needed to display all rows
+// without stretching to the terminal edge.
+func (m gitModel) computeContentWidth() int {
+	w := 0
+	for _, r := range m.rows {
+		var rw int
+		switch r.kind {
+		case rowFile:
+			rw = 5 + runewidth.StringWidth(r.filePath) // "    M file"
+		case rowCommit:
+			// "    hash  subject  age"
+			rw = 4 + len(r.commitHash) + 2 + runewidth.StringWidth(r.commitMsg) + 2 + len(ui.RelativeTime(r.commitTime))
+		case rowStash:
+			idx := "stash@{" + r.stashIndex + "}"
+			rw = 4 + len(idx) + 2 + runewidth.StringWidth(r.stashMsg)
+		case rowRepo:
+			e := m.entries[r.entryIdx]
+			s := e.status
+			// "── name  branch  age  ↑N  ↓N  ≡N  @tag"
+			rw = 3 + runewidth.StringWidth(e.repo.Name) + 1
+			rw += 1 + len(s.Branch)
+			age := ui.RelativeTime(s.Age)
+			if age != "" {
+				rw += 2 + len(age)
+			}
+			if !s.HasUpstream {
+				rw += 2 + 1
+			} else if s.Ahead > 0 {
+				rw += 2 + len(fmt.Sprintf("↑%d", s.Ahead))
+			}
+			if s.Behind > 0 {
+				rw += 2 + len(fmt.Sprintf("↓%d", s.Behind))
+			}
+			if s.Stash > 0 {
+				rw += 2 + len(fmt.Sprintf("≡%d", s.Stash))
+			}
+			if s.Tag != "" {
+				rw += 2 + 1 + len(s.Tag)
+			}
+		}
+		w = max(w, rw)
+	}
+	return max(w, 40)
 }
 
 func flattenCommitRows(entries []repoEntry) []row {
@@ -275,7 +333,10 @@ func flattenCommitRows(entries []repoEntry) []row {
 			entryIdx: i,
 			repoName: e.repo.Name,
 		})
-		for _, c := range e.commits {
+		for j, c := range e.commits {
+			if j >= defaultHistoryLimit {
+				break
+			}
 			rows = append(rows, row{
 				kind:       rowCommit,
 				entryIdx:   i,
@@ -283,6 +344,33 @@ func flattenCommitRows(entries []repoEntry) []row {
 				commitHash: c.Hash,
 				commitMsg:  c.Subject,
 				commitTime: c.Time,
+			})
+		}
+	}
+	return rows
+}
+
+func flattenStashRows(entries []repoEntry) []row {
+	var rows []row
+	for i, e := range entries {
+		if len(e.status.Stashes) == 0 {
+			continue
+		}
+		rows = append(rows, row{
+			kind:     rowRepo,
+			entryIdx: i,
+			repoName: e.repo.Name,
+		})
+		for j, s := range e.status.Stashes {
+			if j >= defaultHistoryLimit {
+				break
+			}
+			rows = append(rows, row{
+				kind:       rowStash,
+				entryIdx:   i,
+				repoName:   e.repo.Name,
+				stashIndex: s.Index,
+				stashMsg:   s.Message,
 			})
 		}
 	}
@@ -316,6 +404,31 @@ func flattenRows(entries []repoEntry) []row {
 	return rows
 }
 
+// skipRepo moves the cursor by delta, wrapping around, and skipping rowRepo rows.
+func (m gitModel) skipRepo(from, delta int) int {
+	n := len(m.rows)
+	if n == 0 {
+		return 0
+	}
+	cur := from
+	for range n {
+		cur = (cur + delta + n) % n
+		if m.rows[cur].kind != rowRepo {
+			return cur
+		}
+	}
+	return from // all rows are repo headers (shouldn't happen)
+}
+
+func (m gitModel) firstNonRepo() int {
+	for i, r := range m.rows {
+		if r.kind != rowRepo {
+			return i
+		}
+	}
+	return 0
+}
+
 func (m gitModel) Init() tea.Cmd { return nil }
 
 func (m gitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -338,21 +451,13 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		} else if len(m.rows) > 0 {
-			m.cursor = len(m.rows) - 1
-		}
+		m.cursor = m.skipRepo(m.cursor, -1)
 	case "down", "j":
-		if m.cursor < len(m.rows)-1 {
-			m.cursor++
-		} else {
-			m.cursor = 0
-		}
+		m.cursor = m.skipRepo(m.cursor, 1)
 	case "tab":
-		m.tab = (m.tab + 1) % 2
+		m.tab = (m.tab + 1) % 3
 		m.rebuildRows()
-		m.cursor = 0
+		m.cursor = m.firstNonRepo()
 	case "enter", "right", "l":
 		if m.cursor >= len(m.rows) {
 			break
@@ -366,6 +471,10 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
 		case rowCommit:
 			m.diffLines = colorDiff(git.ShowCommit(e.repo.Path, r.commitHash))
+			m.viewing = true
+			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
+		case rowStash:
+			m.diffLines = colorDiff(git.ShowStash(e.repo.Path, r.stashIndex))
 			m.viewing = true
 			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
 		}
@@ -408,6 +517,7 @@ func (m gitModel) viewList() string {
 	}{
 		{"Status", tabStatus},
 		{"Commits", tabCommits},
+		{"Stash", tabStash},
 	}
 	var tabParts []string
 	for _, t := range tabs {
@@ -430,6 +540,8 @@ func (m gitModel) viewList() string {
 			lines = append(lines, m.renderFileRow(r, isCursor))
 		case rowCommit:
 			lines = append(lines, m.renderCommitRow(r, isCursor))
+		case rowStash:
+			lines = append(lines, m.renderStashRow(r, isCursor))
 		}
 	}
 
@@ -483,7 +595,7 @@ func (m gitModel) renderRepoRow(r row, cursor bool) string {
 	left := "── " + e.repo.Name + " "
 
 	// Compute dot fill
-	available := m.width - runewidth.StringWidth(left) - runewidth.StringWidth(right) - 4 // margins
+	available := m.contentW - runewidth.StringWidth(left) - runewidth.StringWidth(right) - 2
 	if available < 3 {
 		available = 3
 	}
@@ -548,12 +660,22 @@ func (m gitModel) renderFileRow(r row, cursor bool) string {
 func (m gitModel) renderCommitRow(r row, cursor bool) string {
 	hash := r.commitHash
 	age := ui.RelativeTime(r.commitTime)
-	subject := ui.Truncate(r.commitMsg, max(m.width-20, 30))
+	subject := ui.Truncate(r.commitMsg, max(m.contentW-20, 30))
 
 	if cursor {
 		return ui.Cursor.Render("  ▸ " + hash + "  " + subject + "  " + age)
 	}
 	return "    " + ui.Yellow.Render(hash) + "  " + subject + "  " + ui.Faint.Render(age)
+}
+
+func (m gitModel) renderStashRow(r row, cursor bool) string {
+	idx := "stash@{" + r.stashIndex + "}"
+	subject := ui.Truncate(r.stashMsg, max(m.contentW-20, 30))
+
+	if cursor {
+		return ui.Cursor.Render("  ▸ " + idx + "  " + subject)
+	}
+	return "    " + ui.Yellow.Render(idx) + "  " + subject
 }
 
 func (m gitModel) viewDetail() string {
@@ -566,6 +688,8 @@ func (m gitModel) viewDetail() string {
 		title = r.repoName + " — " + r.filePath
 	case rowCommit:
 		title = r.repoName + " — " + r.commitHash + " " + r.commitMsg
+	case rowStash:
+		title = r.repoName + " — stash@{" + r.stashIndex + "} " + r.stashMsg
 	default:
 		title = r.repoName
 	}
@@ -635,10 +759,9 @@ func fileSign(xy string) (rune, lipgloss.Style) {
 	switch xy {
 	case "??":
 		return '?', ui.Red
-	case " M", "M ":
-		if xy[0] == 'M' {
-			return 'M', ui.Green
-		}
+	case "M ":
+		return 'M', ui.Green
+	case " M":
 		return 'M', ui.Yellow
 	case "MM":
 		return 'M', ui.Cyan

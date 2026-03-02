@@ -15,6 +15,7 @@ type RepoStatus struct {
 	Ahead       int
 	Behind      int
 	Stash       int
+	Stashes     []StashEntry
 	HasUpstream bool
 	Age         time.Time // last commit time
 	Files       []FileStatus
@@ -53,9 +54,24 @@ func GetStatus(dir string) RepoStatus {
 	}
 
 	// stash
-	stashOut := gitOutput(dir, "stash", "list")
+	stashOut := gitOutput(dir, "stash", "list", "--format=%gd%x00%s")
 	if stashOut != "" {
-		s.Stash = len(strings.Split(strings.TrimSpace(stashOut), "\n"))
+		for _, line := range strings.Split(strings.TrimRight(stashOut, "\n"), "\n") {
+			parts := strings.SplitN(line, "\x00", 2)
+			if len(parts) < 2 {
+				continue
+			}
+			// parts[0] is like "stash@{0}", extract the index
+			idx := parts[0]
+			if i := strings.Index(idx, "{"); i >= 0 {
+				idx = strings.TrimRight(idx[i+1:], "}")
+			}
+			s.Stashes = append(s.Stashes, StashEntry{
+				Index:   idx,
+				Message: parts[1],
+			})
+		}
+		s.Stash = len(s.Stashes)
 	}
 
 	// last commit time
@@ -92,12 +108,22 @@ func Diff(dir, file, xy string) string {
 	if xy == "??" {
 		return gitOutput(dir, "diff", "--no-index", "--", "/dev/null", file)
 	}
-	// Staged changes (index column has a letter)
+	// Both staged and unstaged changes — show combined working-tree diff
+	if xy[0] != ' ' && xy[1] != ' ' {
+		return gitOutput(dir, "diff", "HEAD", "--", file)
+	}
+	// Staged only
 	if xy[0] != ' ' {
 		return gitOutput(dir, "diff", "--cached", "--", file)
 	}
 	// Unstaged working-tree changes
 	return gitOutput(dir, "diff", "--", file)
+}
+
+// StashEntry holds a single stash entry.
+type StashEntry struct {
+	Index   string // e.g. "0", "1"
+	Message string
 }
 
 // Commit holds a single parsed git log entry.
@@ -135,6 +161,11 @@ func RecentCommits(dir string, n int) []Commit {
 // ShowCommit returns the full diff output for a single commit.
 func ShowCommit(dir, hash string) string {
 	return gitOutput(dir, "show", hash)
+}
+
+// ShowStash returns the diff output for a stash entry.
+func ShowStash(dir, index string) string {
+	return gitOutput(dir, "stash", "show", "-p", "stash@{"+index+"}")
 }
 
 func gitLine(dir string, args ...string) string {
