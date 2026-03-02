@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"aliz/lz/internal/git"
 	"aliz/lz/internal/ui"
@@ -35,8 +36,9 @@ func RunGit() error {
 // ── Shared data gathering ──
 
 type repoEntry struct {
-	repo   git.Repo
-	status git.RepoStatus
+	repo    git.Repo
+	status  git.RepoStatus
+	commits []git.Commit
 }
 
 func gatherEntries() ([]repoEntry, error) {
@@ -57,6 +59,7 @@ func gatherEntries() ([]repoEntry, error) {
 		go func() {
 			defer wg.Done()
 			entries[i].status = git.GetStatus(r.Path)
+			entries[i].commits = git.RecentCommits(r.Path, 10)
 		}()
 	}
 	wg.Wait()
@@ -199,26 +202,38 @@ func runGitList() error {
 
 // ── TUI model ──
 
+type gitTab int
+
+const (
+	tabStatus  gitTab = iota
+	tabCommits
+)
+
 type rowKind int
 
 const (
 	rowRepo rowKind = iota
 	rowFile
+	rowCommit
 )
 
 type row struct {
-	kind      rowKind
-	entryIdx  int // index into gitModel.entries
-	fileIdx   int // index into entries[entryIdx].status.Files (only for rowFile)
-	repoName  string
-	filePath  string
-	fileXY    string
+	kind       rowKind
+	entryIdx   int // index into gitModel.entries
+	fileIdx    int // index into entries[entryIdx].status.Files (only for rowFile)
+	repoName   string
+	filePath   string
+	fileXY     string
+	commitHash string
+	commitMsg  string
+	commitTime time.Time
 }
 
 type gitModel struct {
 	entries []repoEntry
 	rows    []row
 	cursor  int
+	tab     gitTab
 	viewing bool
 	detail  ui.Scroll
 	diff    string
@@ -231,8 +246,40 @@ func initialGitModel() (gitModel, error) {
 	if err != nil {
 		return gitModel{}, err
 	}
-	rows := flattenRows(entries)
-	return gitModel{entries: entries, rows: rows}, nil
+	m := gitModel{entries: entries, tab: tabStatus}
+	m.rebuildRows()
+	return m, nil
+}
+
+func (m *gitModel) rebuildRows() {
+	switch m.tab {
+	case tabStatus:
+		m.rows = flattenRows(m.entries)
+	case tabCommits:
+		m.rows = flattenCommitRows(m.entries)
+	}
+}
+
+func flattenCommitRows(entries []repoEntry) []row {
+	var rows []row
+	for i, e := range entries {
+		rows = append(rows, row{
+			kind:     rowRepo,
+			entryIdx: i,
+			repoName: e.repo.Name,
+		})
+		for _, c := range e.commits {
+			rows = append(rows, row{
+				kind:       rowCommit,
+				entryIdx:   i,
+				repoName:   e.repo.Name,
+				commitHash: c.Hash,
+				commitMsg:  c.Subject,
+				commitTime: c.Time,
+			})
+		}
+	}
+	return rows
 }
 
 func flattenRows(entries []repoEntry) []row {
@@ -294,11 +341,24 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.cursor = 0
 		}
+	case "tab":
+		m.tab = (m.tab + 1) % 2
+		m.rebuildRows()
+		m.cursor = 0
 	case "enter", "right", "l":
-		if m.cursor < len(m.rows) && m.rows[m.cursor].kind == rowFile {
-			r := m.rows[m.cursor]
+		if m.cursor >= len(m.rows) {
+			break
+		}
+		r := m.rows[m.cursor]
+		switch r.kind {
+		case rowFile:
 			e := m.entries[r.entryIdx]
 			m.diff = git.Diff(e.repo.Path, r.filePath, r.fileXY)
+			m.viewing = true
+			m.detail = ui.Scroll{}
+		case rowCommit:
+			e := m.entries[r.entryIdx]
+			m.diff = git.ShowCommit(e.repo.Path, r.commitHash)
 			m.viewing = true
 			m.detail = ui.Scroll{}
 		}
@@ -332,6 +392,27 @@ func (m gitModel) viewList() string {
 		return "No git repos found.\n"
 	}
 
+	var b strings.Builder
+
+	// Tab bar
+	tabs := []struct {
+		label string
+		tab   gitTab
+	}{
+		{"Status", tabStatus},
+		{"Commits", tabCommits},
+	}
+	var tabParts []string
+	for _, t := range tabs {
+		if t.tab == m.tab {
+			tabParts = append(tabParts, styleActiveTab.Render(t.label))
+		} else {
+			tabParts = append(tabParts, styleFilterTab.Render(t.label))
+		}
+	}
+	b.WriteString(strings.Join(tabParts, " "))
+	b.WriteString("\n\n")
+
 	var lines []string
 	for i, r := range m.rows {
 		isCursor := i == m.cursor
@@ -340,11 +421,12 @@ func (m gitModel) viewList() string {
 			lines = append(lines, m.renderRepoRow(r, isCursor))
 		case rowFile:
 			lines = append(lines, m.renderFileRow(r, isCursor))
+		case rowCommit:
+			lines = append(lines, m.renderCommitRow(r, isCursor))
 		}
 	}
 
-	var b strings.Builder
-	listH := m.height - 2 // 1 for help, 1 for padding
+	listH := m.height - 4 // tab bar + blank + help + padding
 	if listH > 0 && len(lines) > listH {
 		start := ui.KeepCursorVisible(m.cursor, len(lines), listH)
 		lines = lines[start:]
@@ -358,7 +440,7 @@ func (m gitModel) viewList() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(ui.RenderHelp("↑/↓ navigate", "enter diff", "q quit"))
+	b.WriteString(ui.RenderHelp("↑/↓ navigate", "enter detail", "tab switch", "q quit"))
 	return b.String()
 }
 
@@ -456,11 +538,30 @@ func (m gitModel) renderFileRow(r row, cursor bool) string {
 	return "    " + line
 }
 
+func (m gitModel) renderCommitRow(r row, cursor bool) string {
+	hash := r.commitHash
+	age := ui.RelativeTime(r.commitTime)
+	subject := ui.Truncate(r.commitMsg, max(m.width-20, 30))
+
+	if cursor {
+		return ui.Cursor.Render("  ▸ " + hash + "  " + subject + "  " + age)
+	}
+	return "    " + ui.Yellow.Render(hash) + "  " + subject + "  " + ui.Faint.Render(age)
+}
+
 func (m gitModel) viewDetail() string {
 	var b strings.Builder
 
 	r := m.rows[m.cursor]
-	title := r.repoName + " — " + r.filePath
+	var title string
+	switch r.kind {
+	case rowFile:
+		title = r.repoName + " — " + r.filePath
+	case rowCommit:
+		title = r.repoName + " — " + r.commitHash + " " + r.commitMsg
+	default:
+		title = r.repoName
+	}
 	b.WriteString(styleDetailTitle.Render("← " + title))
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", min(m.width, 80)))

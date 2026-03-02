@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -97,6 +98,43 @@ func Diff(dir, file, xy string) string {
 	}
 	// Unstaged working-tree changes
 	return gitOutput(dir, "diff", "--", file)
+}
+
+// Commit holds a single parsed git log entry.
+type Commit struct {
+	Hash    string    // short hash (7 chars)
+	Subject string    // first line of commit message
+	Time    time.Time // author time
+}
+
+// RecentCommits returns the last n commits for a repo.
+func RecentCommits(dir string, n int) []Commit {
+	out := gitOutput(dir, "log", fmt.Sprintf("--format=%%h%%x00%%s%%x00%%ct"), "-n", strconv.Itoa(n))
+	if out == "" {
+		return nil
+	}
+	var commits []Commit
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		parts := strings.SplitN(line, "\x00", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		var t time.Time
+		if epoch, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+			t = time.Unix(epoch, 0)
+		}
+		commits = append(commits, Commit{
+			Hash:    parts[0],
+			Subject: parts[1],
+			Time:    t,
+		})
+	}
+	return commits
+}
+
+// ShowCommit returns the full diff output for a single commit.
+func ShowCommit(dir, hash string) string {
+	return gitOutput(dir, "show", hash)
 }
 
 func gitLine(dir string, args ...string) string {
