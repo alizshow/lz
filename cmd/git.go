@@ -235,8 +235,8 @@ type gitModel struct {
 	cursor  int
 	tab     gitTab
 	viewing bool
-	detail  ui.Scroll
-	diff    string
+	detail    ui.Scroll
+	diffLines []string
 	width   int
 	height  int
 }
@@ -316,6 +316,7 @@ func (m gitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.detail.Height = max(msg.Height-4, 1)
 	case tea.KeyMsg:
 		if m.viewing {
 			return m.updateDetail(msg)
@@ -350,17 +351,16 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		r := m.rows[m.cursor]
+		e := m.entries[r.entryIdx]
 		switch r.kind {
 		case rowFile:
-			e := m.entries[r.entryIdx]
-			m.diff = git.Diff(e.repo.Path, r.filePath, r.fileXY)
+			m.diffLines = colorDiff(git.Diff(e.repo.Path, r.filePath, r.fileXY))
 			m.viewing = true
-			m.detail = ui.Scroll{}
+			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
 		case rowCommit:
-			e := m.entries[r.entryIdx]
-			m.diff = git.ShowCommit(e.repo.Path, r.commitHash)
+			m.diffLines = colorDiff(git.ShowCommit(e.repo.Path, r.commitHash))
 			m.viewing = true
-			m.detail = ui.Scroll{}
+			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
 		}
 	}
 	return m, nil
@@ -567,13 +567,7 @@ func (m gitModel) viewDetail() string {
 	b.WriteString(strings.Repeat("─", min(m.width, 80)))
 	b.WriteString("\n")
 
-	lines := colorDiff(m.diff)
-
-	m.detail.Height = m.height - 4
-	if m.detail.Height < 1 {
-		m.detail.Height = 20
-	}
-	for _, l := range m.detail.Visible(lines) {
+	for _, l := range m.detail.Visible(m.diffLines) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}

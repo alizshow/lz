@@ -48,7 +48,7 @@ func discoverFromDir(root string) ([]Repo, error) {
 
 	// current dir
 	if isGitDir(root) {
-		repos = append(repos, Repo{Name: ".", Path: root})
+		repos = append(repos, Repo{Name: "root", Path: root})
 	}
 
 	// 1-level children

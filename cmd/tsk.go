@@ -486,8 +486,10 @@ func (m tskModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.detail.Height = max(msg.Height-4, 1)
 		if m.viewing && m.content != "" {
 			m.rendered = renderMarkdown(m.content, m.width)
+			m.detail.Total = len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
 		}
 	case editorDoneMsg:
 		m.viewing = false
@@ -542,7 +544,8 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.detailTitle = task.Title
 			m.viewing = true
-			m.detail = ui.Scroll{}
+			total := len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
+			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: total}
 		}
 	case "e":
 		return m, m.openEditor()
@@ -564,10 +567,6 @@ func (m tskModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detail.HandleKey(key)
 	}
 	return m, nil
-}
-
-func (m tskModel) viewportHeight() int {
-	return m.height - 4
 }
 
 func (m tskModel) View() string {
@@ -761,10 +760,6 @@ func (m tskModel) viewDetail() string {
 		lines = lines[:len(lines)-1]
 	}
 
-	m.detail.Height = m.viewportHeight()
-	if m.detail.Height < 1 {
-		m.detail.Height = 20
-	}
 	for _, l := range m.detail.Visible(lines) {
 		b.WriteString(l)
 		b.WriteString("\n")
