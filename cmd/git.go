@@ -260,9 +260,12 @@ type gitModel struct {
 	viewing  bool
 	detail    ui.Scroll
 	diffLines []string
-	primaryW int // width of name-through-age section (dots fill the gap)
-	width    int
-	height   int
+	primaryW  int // width of name-through-age section (dots fill the gap)
+	maxHashW  int // max commit hash width (for commits tab alignment)
+	maxIdxW   int // max stash index label width (for stash tab alignment)
+	maxRowAge int // max age width across entry rows
+	width     int
+	height    int
 }
 
 func initialGitModel() (gitModel, error) {
@@ -273,7 +276,7 @@ func initialGitModel() (gitModel, error) {
 	m := gitModel{entries: entries, tab: tabStatus}
 	m.computeRepoCols()
 	m.rebuildRows()
-	m.cursor = m.firstNonRepo()
+	m.cursor = 0
 	return m, nil
 }
 
@@ -315,6 +318,18 @@ func (m *gitModel) rebuildRows() {
 		m.rows = flattenCommitRows(m.entries)
 	case tabStash:
 		m.rows = flattenStashRows(m.entries)
+	}
+	m.maxHashW = 0
+	m.maxIdxW = 0
+	m.maxRowAge = 0
+	for _, r := range m.rows {
+		switch r.kind {
+		case rowCommit:
+			m.maxHashW = max(m.maxHashW, len(r.commitHash))
+			m.maxRowAge = max(m.maxRowAge, len(ui.RelativeTime(r.commitTime)))
+		case rowStash:
+			m.maxIdxW = max(m.maxIdxW, len("stash@{"+r.stashIndex+"}"))
+		}
 	}
 	m.primaryW = m.computePrimaryWidth()
 }
@@ -417,29 +432,12 @@ func flattenRows(entries []repoEntry) []row {
 	return rows
 }
 
-// skipRepo moves the cursor by delta, wrapping around, and skipping rowRepo rows.
-func (m gitModel) skipRepo(from, delta int) int {
+func (m gitModel) moveCursor(from, delta int) int {
 	n := len(m.rows)
 	if n == 0 {
 		return 0
 	}
-	cur := from
-	for range n {
-		cur = (cur + delta + n) % n
-		if m.rows[cur].kind != rowRepo {
-			return cur
-		}
-	}
-	return from // all rows are repo headers (shouldn't happen)
-}
-
-func (m gitModel) firstNonRepo() int {
-	for i, r := range m.rows {
-		if r.kind != rowRepo {
-			return i
-		}
-	}
-	return 0
+	return (from + delta + n) % n
 }
 
 func (m gitModel) Init() tea.Cmd { return nil }
@@ -464,17 +462,17 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "up", "k":
-		m.cursor = m.skipRepo(m.cursor, -1)
+		m.cursor = m.moveCursor(m.cursor, -1)
 	case "down", "j":
-		m.cursor = m.skipRepo(m.cursor, 1)
+		m.cursor = m.moveCursor(m.cursor, 1)
 	case "tab":
 		m.tab = (m.tab + 1) % 3
 		m.rebuildRows()
-		m.cursor = m.firstNonRepo()
+		m.cursor = 0
 	case "shift+tab":
 		m.tab = (m.tab + 2) % 3
 		m.rebuildRows()
-		m.cursor = m.firstNonRepo()
+		m.cursor = 0
 	case "enter", "right", "l":
 		if m.cursor >= len(m.rows) {
 			break
@@ -552,7 +550,7 @@ func (m gitModel) viewList() string {
 		isCursor := i == m.cursor
 		switch r.kind {
 		case rowRepo:
-			lines = append(lines, m.renderRepoRow(r, isCursor))
+			lines = append(lines, m.renderRepoRow(r))
 		case rowFile:
 			lines = append(lines, m.renderFileRow(r, isCursor))
 		case rowCommit:
@@ -580,7 +578,7 @@ func (m gitModel) viewList() string {
 	return b.String()
 }
 
-func (m gitModel) renderRepoRow(r row, cursor bool) string {
+func (m gitModel) renderRepoRow(r row) string {
 	e := m.entries[r.entryIdx]
 	s := e.status
 	c := m.repoCols[r.entryIdx]
@@ -596,19 +594,6 @@ func (m gitModel) renderRepoRow(r row, cursor bool) string {
 	left := "── " + e.repo.Name + " "
 	dotsW := max(m.primaryW-runewidth.StringWidth(left)-runewidth.StringWidth(c.branch)-m.colW[1]-2, 3)
 	dots := strings.Repeat("·", dotsW)
-
-	// Extra columns (ahead, behind, stash, tag) appended after primary
-	extras := [4]string{c.ahead, c.behind, c.stash, c.tag}
-	var extraPlain string
-	for i := 2; i < 6; i++ {
-		if m.colW[i] > 0 {
-			extraPlain += " " + pad(extras[i-2], m.colW[i])
-		}
-	}
-
-	if cursor {
-		return ui.Cursor.Render("▸ " + e.repo.Name + " " + dots + " " + c.branch + " " + pad(c.age, m.colW[1]) + extraPlain)
-	}
 
 	// Styled branch
 	var branchStyled string
@@ -673,23 +658,28 @@ func (m gitModel) renderFileRow(r row, cursor bool) string {
 
 func (m gitModel) renderCommitRow(r row, cursor bool) string {
 	hash := r.commitHash
+	hashPad := strings.Repeat(" ", max(m.maxHashW-len(hash), 0))
 	age := ui.RelativeTime(r.commitTime)
-	subject := ui.Truncate(r.commitMsg, max(m.primaryW-20, 30))
+	maxSubjectW := max(m.primaryW-4-m.maxHashW-2-2-m.maxRowAge, 20) // "    hash  subject  age"
+	subject := ui.Truncate(r.commitMsg, maxSubjectW)
+	dotsW := max(maxSubjectW-runewidth.StringWidth(subject), 0)
+	dots := strings.Repeat("·", dotsW)
 
 	if cursor {
-		return ui.Cursor.Render("  ▸ " + hash + "  " + subject + "  " + age)
+		return ui.Cursor.Render("  ▸ " + hash + hashPad + "  " + subject + dots + "  " + age)
 	}
-	return "    " + ui.Yellow.Render(hash) + "  " + subject + "  " + ui.Faint.Render(age)
+	return "    " + ui.Yellow.Render(hash) + hashPad + "  " + subject + ui.Faint.Render(dots) + "  " + ui.Faint.Render(age)
 }
 
 func (m gitModel) renderStashRow(r row, cursor bool) string {
 	idx := "stash@{" + r.stashIndex + "}"
-	subject := ui.Truncate(r.stashMsg, max(m.primaryW-20, 30))
+	idxPad := strings.Repeat(" ", max(m.maxIdxW-len(idx), 0))
+	subject := ui.Truncate(r.stashMsg, max(m.primaryW-m.maxIdxW-10, 30))
 
 	if cursor {
-		return ui.Cursor.Render("  ▸ " + idx + "  " + subject)
+		return ui.Cursor.Render("  ▸ " + idx + idxPad + "  " + subject)
 	}
-	return "    " + ui.Yellow.Render(idx) + "  " + subject
+	return "    " + ui.Yellow.Render(idx) + idxPad + "  " + subject
 }
 
 func (m gitModel) viewDetail() string {
