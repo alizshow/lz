@@ -1,9 +1,6 @@
 package ui
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // Scroll tracks viewport state for a scrollable list of lines.
 type Scroll struct {
@@ -97,7 +94,3 @@ func KeepCursorVisible(cursor, totalLines, viewportH int) int {
 	return offset
 }
 
-// RenderHelp formats a help bar string in faint style.
-func RenderHelp(parts ...string) string {
-	return Faint.Render(strings.Join(parts, " · "))
-}

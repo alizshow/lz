@@ -14,7 +14,6 @@ type RepoStatus struct {
 	Tag         string
 	Ahead       int
 	Behind      int
-	Stash       int
 	Stashes     []StashEntry
 	HasUpstream bool
 	Age         time.Time // last commit time
@@ -71,7 +70,6 @@ func GetStatus(dir string) RepoStatus {
 				Message: parts[1],
 			})
 		}
-		s.Stash = len(s.Stashes)
 	}
 
 	// last commit time

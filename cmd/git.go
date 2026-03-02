@@ -101,42 +101,12 @@ func runGitList() error {
 		return nil
 	}
 
-	type rightCols struct {
-		branch, ahead, behind, stash, age, tag string
-	}
-	cols := make([]rightCols, len(entries))
-	for i, e := range entries {
-		s := e.status
-		c := &cols[i]
-		c.branch = s.Branch
-		if !s.HasUpstream {
-			c.ahead = "∅"
-		} else if s.Ahead > 0 {
-			c.ahead = fmt.Sprintf("↑%d", s.Ahead)
-		}
-		if s.Behind > 0 {
-			c.behind = fmt.Sprintf("↓%d", s.Behind)
-		}
-		if s.Stash > 0 {
-			c.stash = fmt.Sprintf("≡%d", s.Stash)
-		}
-		c.age = ui.RelativeTime(s.Age)
-		if s.Tag != "" {
-			c.tag = "@" + s.Tag
-		}
-	}
-
-	var cw [6]int
-	for _, c := range cols {
-		for j, v := range [6]string{c.branch, c.age, c.ahead, c.behind, c.stash, c.tag} {
-			cw[j] = max(cw[j], runewidth.StringWidth(v))
-		}
-	}
+	cols, cw, _ := computeRepoCols(entries)
 
 	padStyled := func(styled, plain string, maxW int) string {
 		return styled + strings.Repeat(" ", maxW-runewidth.StringWidth(plain))
 	}
-	renderExtra := func(c rightCols) string {
+	renderExtra := func(c repoCol) string {
 		var parts []string
 		if cw[2] > 0 {
 			var s string
@@ -274,19 +244,20 @@ func initialGitModel() (gitModel, error) {
 		return gitModel{}, err
 	}
 	m := gitModel{entries: entries, tab: tabStatus}
-	m.computeRepoCols()
+	m.initRepoCols()
 	m.rebuildRows()
 	m.cursor = 0
 	return m, nil
 }
 
-func (m *gitModel) computeRepoCols() {
-	m.repoCols = make([]repoCol, len(m.entries))
-	m.colW = [6]int{}
-	m.maxNameW = 0
-	for i, e := range m.entries {
+// computeRepoCols builds column strings and max widths for a set of entries.
+func computeRepoCols(entries []repoEntry) ([]repoCol, [6]int, int) {
+	cols := make([]repoCol, len(entries))
+	var cw [6]int
+	maxNameW := 0
+	for i, e := range entries {
 		s := e.status
-		c := &m.repoCols[i]
+		c := &cols[i]
 		c.branch = s.Branch
 		c.age = ui.RelativeTime(s.Age)
 		if !s.HasUpstream {
@@ -297,17 +268,22 @@ func (m *gitModel) computeRepoCols() {
 		if s.Behind > 0 {
 			c.behind = fmt.Sprintf("↓%d", s.Behind)
 		}
-		if s.Stash > 0 {
-			c.stash = fmt.Sprintf("≡%d", s.Stash)
+		if len(s.Stashes) > 0 {
+			c.stash = fmt.Sprintf("≡%d", len(s.Stashes))
 		}
 		if s.Tag != "" {
 			c.tag = "@" + s.Tag
 		}
 		for j, v := range [6]string{c.branch, c.age, c.ahead, c.behind, c.stash, c.tag} {
-			m.colW[j] = max(m.colW[j], runewidth.StringWidth(v))
+			cw[j] = max(cw[j], runewidth.StringWidth(v))
 		}
-		m.maxNameW = max(m.maxNameW, runewidth.StringWidth(e.repo.Name))
+		maxNameW = max(maxNameW, runewidth.StringWidth(e.repo.Name))
 	}
+	return cols, cw, maxNameW
+}
+
+func (m *gitModel) initRepoCols() {
+	m.repoCols, m.colW, m.maxNameW = computeRepoCols(m.entries)
 }
 
 func (m *gitModel) rebuildRows() {
@@ -479,17 +455,19 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		r := m.rows[m.cursor]
 		e := m.entries[r.entryIdx]
+		var raw string
 		switch r.kind {
 		case rowFile:
-			m.diffLines = colorDiff(git.Diff(e.repo.Path, r.filePath, r.fileXY))
-			m.viewing = true
-			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
+			raw = git.Diff(e.repo.Path, r.filePath, r.fileXY)
 		case rowCommit:
-			m.diffLines = colorDiff(git.ShowCommit(e.repo.Path, r.commitHash))
-			m.viewing = true
-			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
+			raw = git.ShowCommit(e.repo.Path, r.commitHash)
 		case rowStash:
-			m.diffLines = colorDiff(git.ShowStash(e.repo.Path, r.stashIndex))
+			raw = git.ShowStash(e.repo.Path, r.stashIndex)
+		default:
+			break
+		}
+		if r.kind != rowRepo {
+			m.diffLines = colorDiff(raw)
 			m.viewing = true
 			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
 		}
@@ -525,24 +503,7 @@ func (m gitModel) viewList() string {
 
 	var b strings.Builder
 
-	// Tab bar
-	tabs := []struct {
-		label string
-		tab   gitTab
-	}{
-		{"Status", tabStatus},
-		{"Commits", tabCommits},
-		{"Stash", tabStash},
-	}
-	var tabParts []string
-	for _, t := range tabs {
-		if t.tab == m.tab {
-			tabParts = append(tabParts, styleActiveTab.Render(t.label))
-		} else {
-			tabParts = append(tabParts, styleFilterTab.Render(t.label))
-		}
-	}
-	b.WriteString(strings.Join(tabParts, " "))
+	b.WriteString(ui.RenderTabBar([]string{"Status", "Commits", "Stash"}, int(m.tab)))
 	b.WriteString("\n\n")
 
 	var lines []string
@@ -697,7 +658,7 @@ func (m gitModel) viewDetail() string {
 	default:
 		title = r.repoName
 	}
-	b.WriteString(styleDetailTitle.Render("← " + title))
+	b.WriteString(ui.DetailTitle.Render("← " + title))
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")

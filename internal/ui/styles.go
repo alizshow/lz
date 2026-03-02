@@ -16,4 +16,6 @@ var (
 
 	Cursor     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("5"))
 	FaintGreen = lipgloss.NewStyle().Faint(true).Foreground(lipgloss.Color("2"))
+
+	DetailTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Padding(0, 1)
 )

@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/muesli/termenv"
 )
 
 // Task status lifecycle.
@@ -80,7 +81,13 @@ func RunTsk() error {
 	}
 
 	root := findRoot()
-	m := initialModel(root)
+
+	// Detect terminal style before entering alt screen — the OSC query
+	// for background color times out inside BubbleTea's alt screen.
+	// The renderer itself is recreated on resize with the correct width.
+	styleOpt := detectGlamourStyle()
+
+	m := initialModel(root, styleOpt)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
@@ -121,67 +128,21 @@ func runTskList(showAll bool) error {
 	}
 	slices.Sort(order)
 
-	// Compute max widths for alignment.
-	maxProjLen := 0
-	for _, t := range m.filtered {
-		if len(t.Project) > maxProjLen {
-			maxProjLen = len(t.Project)
-		}
-	}
-	maxTitleW := 0
-	maxAgeLen := 0
-	for _, t := range m.filtered {
-		tw := runewidth.StringWidth(t.Title)
-		if tw > maxTitleW {
-			maxTitleW = tw
-		}
-		al := len(ui.RelativeTime(t.ModTime))
-		if al > maxAgeLen {
-			maxAgeLen = al
-		}
-	}
-	prefixW := 2 + maxProjLen + 2 // "  proj  "
-	lineW := prefixW + maxTitleW + 3 + 1 + maxAgeLen
+	lay := computeTskLayout(m.filtered, false)
 
 	for _, status := range order {
 		g := groups[status]
 
-		var headerStyle lipgloss.Style
-		var icon string
-		switch status {
-		case InProgress:
-			headerStyle = styleInProgress
-			icon = "▶"
-		case Todo:
-			headerStyle = lipgloss.NewStyle().Bold(true)
-			icon = "○"
-		case Backlog:
-			headerStyle = ui.Faint.Bold(true)
-			icon = "◇"
-		case Done:
-			headerStyle = styleDone.Bold(true)
-			icon = "✓"
-		}
+		icon, headerStyle, _ := statusPresentation(status)
 		fmt.Println(headerStyle.Render(fmt.Sprintf(" %s %s", icon, status.String())))
 
 		for _, t := range g.tasks {
-			var taskStyle lipgloss.Style
-			switch t.Status {
-			case InProgress:
-				taskStyle = styleInProgress
-			case Todo:
-				taskStyle = styleTodo
-			case Backlog:
-				taskStyle = ui.Faint
-			case Done:
-				taskStyle = styleDone
-			}
+			_, _, taskStyle := statusPresentation(t.Status)
 
-			projPadded := fmt.Sprintf("%-*s", maxProjLen, t.Project)
+			projPadded := fmt.Sprintf("%-*s", lay.maxProjLen, t.Project)
 			age := ui.RelativeTime(t.ModTime)
 			titleW := runewidth.StringWidth(t.Title)
-			dotsAvail := max(lineW-prefixW-titleW-1-len(age), 2)
-			dots := " " + strings.Repeat("·", dotsAvail-1)
+			dots := ui.DotFill(lay.lineW - lay.prefixW - titleW - 1 - len(age))
 
 			fmt.Printf("  %s  %s%s %s  %s\n",
 				styleProject.Render(projPadded),
@@ -216,6 +177,7 @@ func findRoot() string {
 		}
 		dir = parent
 	}
+	fmt.Fprintln(os.Stderr, "lz t: no .tasks/ directory found (searched up to /)")
 	cwd, _ := os.Getwd()
 	return cwd
 }
@@ -248,116 +210,63 @@ func discoverTasks(root string) []Task {
 		}
 	}
 
+	dirs := []struct {
+		name   string
+		status Status
+	}{
+		{"current", InProgress},
+		{"todo", Todo},
+		{"backlog", Backlog},
+		{"done", Done},
+	}
+
 	for _, p := range projects {
 		tasksDir := filepath.Join(p.dir, ".tasks")
 
-		currentDir := filepath.Join(tasksDir, "current")
-		if currentFiles, err := os.ReadDir(currentDir); err == nil {
-			for _, f := range currentFiles {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
-					continue
+		for _, d := range dirs {
+			dir := filepath.Join(tasksDir, d.name)
+			if files, err := os.ReadDir(dir); err == nil {
+				scanTaskDir(dir, d.status, p.name, files, &tasks)
+			} else if d.status == InProgress {
+				// Fallback: support legacy current.md single file
+				cur := filepath.Join(tasksDir, "current.md")
+				if info, err := os.Stat(cur); err == nil {
+					tasks = append(tasks, Task{
+						Title:    extractTitle(cur),
+						Filename: "current.md",
+						Project:  p.name,
+						Status:   InProgress,
+						Path:     cur,
+						ModTime:  info.ModTime(),
+					})
 				}
-				fp := filepath.Join(currentDir, f.Name())
-				info, err := f.Info()
-				var mt time.Time
-				if err == nil {
-					mt = info.ModTime()
-				}
-				tasks = append(tasks, Task{
-					Title:    extractTitle(fp),
-					Filename: f.Name(),
-					Project:  p.name,
-					Status:   InProgress,
-					Path:     fp,
-					ModTime:  mt,
-				})
-			}
-		} else {
-			// Fallback: support legacy current.md single file
-			cur := filepath.Join(tasksDir, "current.md")
-			if info, err := os.Stat(cur); err == nil {
-				tasks = append(tasks, Task{
-					Title:    extractTitle(cur),
-					Filename: "current.md",
-					Project:  p.name,
-					Status:   InProgress,
-					Path:     cur,
-					ModTime:  info.ModTime(),
-				})
-			}
-		}
-
-		todoDir := filepath.Join(tasksDir, "todo")
-		if todoFiles, err := os.ReadDir(todoDir); err == nil {
-			for _, f := range todoFiles {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
-					continue
-				}
-				fp := filepath.Join(todoDir, f.Name())
-				info, err := f.Info()
-				var mt time.Time
-				if err == nil {
-					mt = info.ModTime()
-				}
-				tasks = append(tasks, Task{
-					Title:    extractTitle(fp),
-					Filename: f.Name(),
-					Project:  p.name,
-					Status:   Todo,
-					Path:     fp,
-					ModTime:  mt,
-				})
-			}
-		}
-
-		backlogDir := filepath.Join(tasksDir, "backlog")
-		if backlogFiles, err := os.ReadDir(backlogDir); err == nil {
-			for _, f := range backlogFiles {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
-					continue
-				}
-				fp := filepath.Join(backlogDir, f.Name())
-				info, err := f.Info()
-				var mt time.Time
-				if err == nil {
-					mt = info.ModTime()
-				}
-				tasks = append(tasks, Task{
-					Title:    extractTitle(fp),
-					Filename: f.Name(),
-					Project:  p.name,
-					Status:   Backlog,
-					Path:     fp,
-					ModTime:  mt,
-				})
-			}
-		}
-
-		doneDir := filepath.Join(tasksDir, "done")
-		if doneFiles, err := os.ReadDir(doneDir); err == nil {
-			for _, f := range doneFiles {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
-					continue
-				}
-				fp := filepath.Join(doneDir, f.Name())
-				info, err := f.Info()
-				var mt time.Time
-				if err == nil {
-					mt = info.ModTime()
-				}
-				tasks = append(tasks, Task{
-					Title:    extractTitle(fp),
-					Filename: f.Name(),
-					Project:  p.name,
-					Status:   Done,
-					Path:     fp,
-					ModTime:  mt,
-				})
 			}
 		}
 	}
 
 	return tasks
+}
+
+func scanTaskDir(dir string, status Status, project string, files []os.DirEntry, tasks *[]Task) {
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
+			continue
+		}
+		fp := filepath.Join(dir, f.Name())
+		info, err := f.Info()
+		var mt time.Time
+		if err == nil {
+			mt = info.ModTime()
+		}
+		*tasks = append(*tasks, Task{
+			Title:    extractTitle(fp),
+			Filename: f.Name(),
+			Project:  project,
+			Status:   status,
+			Path:     fp,
+			ModTime:  mt,
+		})
+	}
 }
 
 func extractTitle(path string) string {
@@ -387,22 +296,40 @@ var (
 	styleTodo       = lipgloss.NewStyle()
 	styleDone       = ui.FaintGreen
 	styleProject    = ui.Cyan
-	styleCursor     = ui.Cursor
-	styleHeader     = lipgloss.NewStyle().Bold(true).Padding(0, 1)
-	styleFilterTab  = lipgloss.NewStyle().Padding(0, 1)
-	styleActiveTab  = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("4")).Underline(true)
-	styleDots       = ui.Faint
-	styleAge        = ui.Faint
-	styleHelp       = ui.Faint
-	styleDetailTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Padding(0, 1)
+	styleCursor = ui.Cursor
+	styleDots = ui.Faint
+	styleAge  = ui.Faint
 )
 
-func renderMarkdown(content string, width int) string {
+func statusPresentation(s Status) (icon string, header lipgloss.Style, task lipgloss.Style) {
+	switch s {
+	case InProgress:
+		return "▶", styleInProgress, styleInProgress
+	case Todo:
+		return "○", lipgloss.NewStyle().Bold(true), styleTodo
+	case Backlog:
+		return "◇", ui.Faint.Bold(true), ui.Faint
+	case Done:
+		return "✓", styleDone.Bold(true), styleDone
+	}
+	return "", lipgloss.NewStyle(), lipgloss.NewStyle()
+}
+
+// detectGlamourStyle runs the slow OSC terminal background query once and
+// returns the resolved glamour style option. Must be called before alt screen.
+func detectGlamourStyle() glamour.TermRendererOption {
+	if termenv.HasDarkBackground() {
+		return glamour.WithStandardStyle("dark")
+	}
+	return glamour.WithStandardStyle("light")
+}
+
+func renderMarkdown(styleOpt glamour.TermRendererOption, content string, width int) string {
 	w := width - 4
 	if w < 40 {
 		w = 40
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(w))
+	r, err := glamour.NewTermRenderer(styleOpt, glamour.WithWordWrap(w))
 	if err != nil {
 		return content
 	}
@@ -426,13 +353,14 @@ type tskModel struct {
 	content     string
 	rendered    string
 	detailTitle string
+	styleOpt    glamour.TermRendererOption
 	width       int
 	height      int
 }
 
-func initialModel(root string) tskModel {
+func initialModel(root string, styleOpt glamour.TermRendererOption) tskModel {
 	tasks := discoverTasks(root)
-	m := tskModel{root: root, allTasks: tasks, filter: FilterActive}
+	m := tskModel{root: root, allTasks: tasks, filter: FilterActive, styleOpt: styleOpt}
 	m.applyFilter()
 	return m
 }
@@ -462,6 +390,31 @@ func (m *tskModel) applyFilter() {
 		}
 	}
 	m.cursor = 0
+}
+
+// tskLayout holds precomputed column widths for task list rendering.
+type tskLayout struct {
+	maxProjLen int
+	maxTitleW  int
+	maxAgeLen  int
+	prefixW    int
+	lineW      int
+}
+
+func computeTskLayout(tasks []Task, cursorCol bool) tskLayout {
+	var l tskLayout
+	for _, t := range tasks {
+		l.maxProjLen = max(l.maxProjLen, len(t.Project))
+		l.maxTitleW = max(l.maxTitleW, runewidth.StringWidth(t.Title))
+		l.maxAgeLen = max(l.maxAgeLen, len(ui.RelativeTime(t.ModTime)))
+	}
+	if cursorCol {
+		l.prefixW = 1 + 2 + l.maxProjLen + 2 // "▸ proj  "
+	} else {
+		l.prefixW = 2 + l.maxProjLen + 2 // "  proj  "
+	}
+	l.lineW = l.prefixW + l.maxTitleW + 3 + 1 + l.maxAgeLen
+	return l
 }
 
 type editorDoneMsg struct{ err error }
@@ -548,9 +501,9 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewing = true
 			total := len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
 			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: total}
-			content, width := m.content, m.width
+			styleOpt, content, width := m.styleOpt, m.content, m.width
 			return m, func() tea.Msg {
-				return renderDoneMsg{rendered: renderMarkdown(content, width)}
+				return renderDoneMsg{rendered: renderMarkdown(styleOpt, content, width)}
 			}
 		}
 	case "e":
@@ -585,118 +538,53 @@ func (m tskModel) View() string {
 func (m tskModel) viewList() string {
 	var b strings.Builder
 
-	tabs := []struct {
-		label  string
-		filter Filter
-	}{
-		{"Active", FilterActive},
-		{"Backlog", FilterBacklog},
-		{"Done", FilterDone},
-		{"All", FilterAll},
-	}
-	var tabParts []string
-	for _, t := range tabs {
-		if t.filter == m.filter {
-			tabParts = append(tabParts, styleActiveTab.Render(t.label))
-		} else {
-			tabParts = append(tabParts, styleFilterTab.Render(t.label))
-		}
-	}
-	b.WriteString(strings.Join(tabParts, " "))
+	b.WriteString(ui.RenderTabBar([]string{"Active", "Backlog", "Done", "All"}, int(m.filter)))
 	b.WriteString("\n\n")
 
 	if len(m.filtered) == 0 {
-		b.WriteString(styleHelp.Render("  No tasks found."))
+		b.WriteString(ui.Faint.Render("  No tasks found."))
 		b.WriteString("\n")
 	}
 
-	type group struct {
-		status Status
-		tasks  []struct {
-			task  Task
-			index int
-		}
+	type tskEntry struct {
+		task  Task
+		index int
+	}
+	type tskGroup struct {
+		tasks []tskEntry
 	}
 
-	groups := make(map[Status]*group)
+	groups := make(map[Status]*tskGroup)
 	order := []Status{}
 	for i, t := range m.filtered {
 		g, ok := groups[t.Status]
 		if !ok {
-			g = &group{status: t.Status}
+			g = &tskGroup{}
 			groups[t.Status] = g
 			order = append(order, t.Status)
 		}
-		g.tasks = append(g.tasks, struct {
-			task  Task
-			index int
-		}{t, i})
+		g.tasks = append(g.tasks, tskEntry{t, i})
 	}
 
 	slices.Sort(order)
 
-	maxProjLen := 0
-	for _, t := range m.filtered {
-		if len(t.Project) > maxProjLen {
-			maxProjLen = len(t.Project)
-		}
-	}
-	prefixW := 1 + 2 + maxProjLen + 2
-	maxAgeLen := 0
-	maxTitleW := 0
-	for _, t := range m.filtered {
-		tw := runewidth.StringWidth(t.Title)
-		if tw > maxTitleW {
-			maxTitleW = tw
-		}
-		al := len(ui.RelativeTime(t.ModTime))
-		if al > maxAgeLen {
-			maxAgeLen = al
-		}
-	}
-	lineW := prefixW + maxTitleW + 3 + 1 + maxAgeLen
+	lay := computeTskLayout(m.filtered, true)
 
 	var lines []string
 	for _, status := range order {
 		g := groups[status]
 
-		var headerStyle lipgloss.Style
-		var icon string
-		switch status {
-		case InProgress:
-			headerStyle = styleInProgress
-			icon = "▶"
-		case Todo:
-			headerStyle = lipgloss.NewStyle().Bold(true)
-			icon = "○"
-		case Backlog:
-			headerStyle = ui.Faint.Bold(true)
-			icon = "◇"
-		case Done:
-			headerStyle = styleDone.Bold(true)
-			icon = "✓"
-		}
+		icon, headerStyle, _ := statusPresentation(status)
 		lines = append(lines, headerStyle.Render(fmt.Sprintf(" %s %s", icon, status.String())))
 
 		for _, entry := range g.tasks {
-			var taskStyle lipgloss.Style
-			switch entry.task.Status {
-			case InProgress:
-				taskStyle = styleInProgress
-			case Todo:
-				taskStyle = styleTodo
-			case Backlog:
-				taskStyle = ui.Faint
-			case Done:
-				taskStyle = styleDone
-			}
+			_, _, taskStyle := statusPresentation(entry.task.Status)
 
-			projPadded := fmt.Sprintf("%-*s", maxProjLen, entry.task.Project)
+			projPadded := fmt.Sprintf("%-*s", lay.maxProjLen, entry.task.Project)
 			age := ui.RelativeTime(entry.task.ModTime)
 
 			titleW := runewidth.StringWidth(entry.task.Title)
-			dotsAvail := max(lineW-prefixW-titleW-1-len(age), 2)
-			dots := " " + strings.Repeat("·", dotsAvail-1)
+			dots := ui.DotFill(lay.lineW - lay.prefixW - titleW - 1 - len(age))
 
 			cursor := "  "
 			var proj, title, styledDots, styledAge string
@@ -722,20 +610,21 @@ func (m tskModel) viewList() string {
 
 	listHeight := m.height - 3
 	if listHeight > 0 && len(lines) > listHeight {
-		cursorLine := 0
-		for _, status := range order {
-			g := groups[status]
-			cursorLine++
-			for _, entry := range g.tasks {
-				if entry.index == m.cursor {
-					goto found
+		cl := func() int {
+			n := 0
+			for _, st := range order {
+				n++ // header line
+				for _, e := range groups[st].tasks {
+					if e.index == m.cursor {
+						return n
+					}
+					n++
 				}
-				cursorLine++
+				n++ // blank line
 			}
-			cursorLine++
-		}
-	found:
-		start := ui.KeepCursorVisible(cursorLine, len(lines), listHeight)
+			return n
+		}()
+		start := ui.KeepCursorVisible(cl, len(lines), listHeight)
 		lines = lines[start:]
 		if len(lines) > listHeight {
 			lines = lines[:listHeight]
@@ -755,7 +644,7 @@ func (m tskModel) viewList() string {
 func (m tskModel) viewDetail() string {
 	var b strings.Builder
 
-	header := styleDetailTitle.Render("← " + m.detailTitle)
+	header := ui.DetailTitle.Render("← " + m.detailTitle)
 	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width))

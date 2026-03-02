@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -32,16 +33,29 @@ func RelativeTime(t time.Time) string {
 	}
 }
 
-// DotLine builds "left ····· right" padded to width with dot leaders.
-func DotLine(left, right string, width int) string {
-	lw := runewidth.StringWidth(left)
-	rw := runewidth.StringWidth(right)
-	pad := width - lw - rw
-	if pad < 3 {
-		pad = 3
+// DotFill returns a dot-leader string " ···" of the given width (minimum 2).
+func DotFill(width int) string {
+	width = max(width, 2)
+	return " " + strings.Repeat("·", width-1)
+}
+
+// Tab bar styles.
+var (
+	TabActive = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("4")).Underline(true)
+	Tab       = lipgloss.NewStyle().Padding(0, 1)
+)
+
+// RenderTabBar renders a horizontal tab bar with the active tab highlighted.
+func RenderTabBar(labels []string, active int) string {
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		if i == active {
+			parts[i] = TabActive.Render(label)
+		} else {
+			parts[i] = Tab.Render(label)
+		}
 	}
-	dots := " " + strings.Repeat("·", pad-2) + " "
-	return left + dots + right
+	return strings.Join(parts, " ")
 }
 
 // Truncate shortens s to max display cells, appending "…" if truncated.
@@ -65,4 +79,9 @@ func Truncate(s string, max int) string {
 		cur += rw
 	}
 	return string(result) + "…"
+}
+
+// RenderHelp formats a help bar string in faint style.
+func RenderHelp(parts ...string) string {
+	return Faint.Render(strings.Join(parts, " · "))
 }

@@ -31,16 +31,20 @@ internal/
     discover.go      Finds git repos at cwd and 1-level children
     status.go        Parses `git status --porcelain`, branch, tags, stash entries, commits, diff
   ui/
-    styles.go        Shared lipgloss color/style constants
-    format.go        Formatting helpers (relative time, padding)
+    styles.go        Shared lipgloss color/style constants (DetailTitle, Cursor, colors)
+    format.go        Formatting helpers (RelativeTime, DotFill, Truncate, RenderTabBar, RenderHelp)
     scroll.go        Reusable scroll viewport (used by both TUIs)
 ```
 
-**Task discovery** (`tsk.go`): walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` to find project root. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`).
+**Task discovery** (`tsk.go`): `findRoot` walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` (prints stderr hint if not found). `discoverTasks` uses `scanTaskDir` helper to scan each status directory. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`).
 
-**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. Repo headers use column-aligned layout with variable dot-fill (shared between TUI and `-l` modes). Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
+**Shared helpers** (`tsk.go`): `statusPresentation()` maps Status → (icon, headerStyle, taskStyle) — used by both list and TUI modes. `computeTskLayout()` computes column widths shared between `runTskList` and `viewList`.
 
-**Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Detail view uses full terminal width.
+**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. `computeRepoCols()` is a standalone function that computes column strings + widths for repo headers, shared between TUI and `-l` modes. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
+
+**Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Terminal style (dark/light) is detected once at startup before alt screen via `detectGlamourStyle()` (avoids OSC timeout); the renderer is recreated per render with the current terminal width. Detail view uses full terminal width.
+
+**UI shared** (`ui/`): `RenderTabBar` renders tab bars for both TUIs. `RenderHelp` renders faint help bars. `DotFill` generates dot-leader strings. `DetailTitle` style is shared between both detail views.
 
 ## Dependencies
 
