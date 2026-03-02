@@ -65,6 +65,13 @@ func gatherEntries() ([]repoEntry, error) {
 	wg.Wait()
 
 	slices.SortFunc(entries, func(a, b repoEntry) int {
+		// root (cwd) always first
+		if a.repo.Name == "root" {
+			return -1
+		}
+		if b.repo.Name == "root" {
+			return 1
+		}
 		da, db := !a.status.IsClean, !b.status.IsClean
 		if da != db {
 			if da {
