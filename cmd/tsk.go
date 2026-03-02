@@ -424,7 +424,7 @@ type tskModel struct {
 	cursor      int
 	filter      Filter
 	viewing     bool
-	scroll      int
+	detail      ui.Scroll
 	content     string
 	rendered    string
 	detailTitle string
@@ -542,7 +542,7 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.detailTitle = task.Title
 			m.viewing = true
-			m.scroll = 0
+			m.detail = ui.Scroll{}
 		}
 	case "e":
 		return m, m.openEditor()
@@ -551,28 +551,17 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m tskModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+	switch key {
 	case "q", "esc", "backspace", "left", "h":
 		m.viewing = false
 		return m, nil
 	case "ctrl+c":
 		return m, tea.Quit
-	case "up", "k":
-		if m.scroll > 0 {
-			m.scroll--
-		}
-	case "down", "j":
-		m.scroll++
-	case "g":
-		m.scroll = 0
-	case "G":
-		lines := strings.Split(m.content, "\n")
-		maxScroll := len(lines) - m.viewportHeight()
-		if maxScroll > 0 {
-			m.scroll = maxScroll
-		}
 	case "e":
 		return m, m.openEditor()
+	default:
+		m.detail.HandleKey(key)
 	}
 	return m, nil
 }
@@ -741,16 +730,7 @@ func (m tskModel) viewList() string {
 			cursorLine++
 		}
 	found:
-		start := 0
-		if cursorLine > listHeight-2 {
-			start = cursorLine - listHeight + 2
-		}
-		if start > len(lines)-listHeight {
-			start = len(lines) - listHeight
-		}
-		if start < 0 {
-			start = 0
-		}
+		start := ui.KeepCursorVisible(cursorLine, len(lines), listHeight)
 		lines = lines[start:]
 		if len(lines) > listHeight {
 			lines = lines[:listHeight]
@@ -762,8 +742,7 @@ func (m tskModel) viewList() string {
 		b.WriteString("\n")
 	}
 
-	help := styleHelp.Render("↑/↓ navigate · → open · e edit · tab filter · q quit")
-	b.WriteString(help)
+	b.WriteString(ui.RenderHelp("↑/↓ navigate", "→ open", "e edit", "tab filter", "q quit"))
 
 	return b.String()
 }
@@ -777,39 +756,20 @@ func (m tskModel) viewDetail() string {
 	b.WriteString(strings.Repeat("─", min(m.width, 60)))
 	b.WriteString("\n")
 
-	rendered := m.rendered
-	lines := strings.Split(rendered, "\n")
-	// glamour adds a trailing newline; trim empty last line
+	lines := strings.Split(m.rendered, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 
-	vh := m.viewportHeight()
-	if vh < 1 {
-		vh = 20
+	m.detail.Height = m.viewportHeight()
+	if m.detail.Height < 1 {
+		m.detail.Height = 20
 	}
-
-	maxScroll := max(len(lines)-vh, 0)
-	m.scroll = min(m.scroll, maxScroll)
-
-	end := min(m.scroll+vh, len(lines))
-
-	visible := lines[m.scroll:end]
-	for _, l := range visible {
+	for _, l := range m.detail.Visible(lines) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
 
-	scrollInfo := ""
-	if maxScroll > 0 {
-		pct := 100 * m.scroll / maxScroll
-		if m.scroll == 0 {
-			pct = 0
-		}
-		scrollInfo = fmt.Sprintf(" · %d%%", pct)
-	}
-	help := styleHelp.Render(fmt.Sprintf("↑/↓ scroll · g/G top/bottom · e edit · ← back%s", scrollInfo))
-	b.WriteString(help)
-
+	b.WriteString(ui.RenderHelp("↑/↓ scroll", "g/G top/bottom", "e edit", "← back"+m.detail.Percent()))
 	return b.String()
 }

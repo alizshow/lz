@@ -11,32 +11,45 @@ import (
 	"aliz/lz/internal/git"
 	"aliz/lz/internal/ui"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
 
-// RunGit prints multi-repo git status to stdout.
+// RunGit launches the git status TUI, or prints a list with -l/--list.
 func RunGit() error {
+	for _, arg := range os.Args[2:] {
+		if arg == "-l" || arg == "--list" {
+			return runGitList()
+		}
+	}
+
+	m, err := initialGitModel()
+	if err != nil {
+		return err
+	}
+	_, err = tea.NewProgram(m, tea.WithAltScreen()).Run()
+	return err
+}
+
+// ── Shared data gathering ──
+
+type repoEntry struct {
+	repo   git.Repo
+	status git.RepoStatus
+}
+
+func gatherEntries() ([]repoEntry, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return err
+		return nil, err
 	}
-
 	repos, err := git.Discover(cwd)
 	if err != nil {
-		return err
-	}
-	if len(repos) == 0 {
-		fmt.Println("No git repos found.")
-		return nil
+		return nil, err
 	}
 
-	// Gather status for all repos in parallel.
-	type entry struct {
-		repo   git.Repo
-		status git.RepoStatus
-	}
-	entries := make([]entry, len(repos))
+	entries := make([]repoEntry, len(repos))
 	var wg sync.WaitGroup
 	wg.Add(len(repos))
 	for i, r := range repos {
@@ -48,8 +61,7 @@ func RunGit() error {
 	}
 	wg.Wait()
 
-	// Sort: dirty repos first, then alphabetically by name.
-	slices.SortFunc(entries, func(a, b entry) int {
+	slices.SortFunc(entries, func(a, b repoEntry) int {
 		da, db := !a.status.IsClean, !b.status.IsClean
 		if da != db {
 			if da {
@@ -60,8 +72,21 @@ func RunGit() error {
 		return cmp.Compare(a.repo.Name, b.repo.Name)
 	})
 
-	// Compute per-entry column values (plain text).
-	// Columns: branch, ahead(or ∅), behind, stash, age, tag
+	return entries, nil
+}
+
+// ── Non-interactive list mode (lz g -l) ──
+
+func runGitList() error {
+	entries, err := gatherEntries()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("No git repos found.")
+		return nil
+	}
+
 	type rightCols struct {
 		branch, ahead, behind, stash, age, tag string
 	}
@@ -87,7 +112,6 @@ func RunGit() error {
 		}
 	}
 
-	// Max column widths: branch[0] age[1] ahead[2] behind[3] stash[4] tag[5]
 	var cw [6]int
 	for _, c := range cols {
 		for j, v := range [6]string{c.branch, c.age, c.ahead, c.behind, c.stash, c.tag} {
@@ -95,12 +119,9 @@ func RunGit() error {
 		}
 	}
 
-	// Pad helper: styled text right-padded with spaces to fixed width.
 	padStyled := func(styled, plain string, maxW int) string {
 		return styled + strings.Repeat(" ", maxW-runewidth.StringWidth(plain))
 	}
-
-	// renderExtra returns padded styled columns after the primary span (branch + age).
 	renderExtra := func(c rightCols) string {
 		var parts []string
 		if cw[2] > 0 {
@@ -124,25 +145,22 @@ func RunGit() error {
 		return strings.Join(parts, " ")
 	}
 
-	// Primary span: left + dots + branch + age. File paths influence this width.
 	maxLeftW := 0
 	for _, e := range entries {
 		maxLeftW = max(maxLeftW, runewidth.StringWidth(fmt.Sprintf("── %s ", e.repo.Name)))
 	}
-	primaryW := max(60, maxLeftW+3+1+cw[0]+1+cw[1]) // left + min_dots + " " + branch + " " + age
+	primaryW := max(60, maxLeftW+3+1+cw[0]+1+cw[1])
 	for _, e := range entries {
 		for _, f := range e.status.Files {
-			primaryW = max(primaryW, 5+runewidth.StringWidth(f.File)) // "   X " + path
+			primaryW = max(primaryW, 5+runewidth.StringWidth(f.File))
 		}
 	}
 
-	// Render.
 	prevDirty := false
 	for i, e := range entries {
 		if i > 0 && (prevDirty || !e.status.IsClean) {
 			fmt.Println()
 		}
-
 		left := fmt.Sprintf("── %s ", e.repo.Name)
 		branchW := runewidth.StringWidth(cols[i].branch)
 		dots := strings.Repeat("·", primaryW-runewidth.StringWidth(left)-branchW-cw[1]-2)
@@ -176,11 +194,326 @@ func RunGit() error {
 		}
 		prevDirty = !e.status.IsClean
 	}
-
 	return nil
 }
 
-// renderFile renders a porcelain status entry. Renames produce two lines.
+// ── TUI model ──
+
+type rowKind int
+
+const (
+	rowRepo rowKind = iota
+	rowFile
+)
+
+type row struct {
+	kind      rowKind
+	entryIdx  int // index into gitModel.entries
+	fileIdx   int // index into entries[entryIdx].status.Files (only for rowFile)
+	repoName  string
+	filePath  string
+	fileXY    string
+}
+
+type gitModel struct {
+	entries []repoEntry
+	rows    []row
+	cursor  int
+	viewing bool
+	detail  ui.Scroll
+	diff    string
+	width   int
+	height  int
+}
+
+func initialGitModel() (gitModel, error) {
+	entries, err := gatherEntries()
+	if err != nil {
+		return gitModel{}, err
+	}
+	rows := flattenRows(entries)
+	return gitModel{entries: entries, rows: rows}, nil
+}
+
+func flattenRows(entries []repoEntry) []row {
+	var rows []row
+	for i, e := range entries {
+		rows = append(rows, row{
+			kind:     rowRepo,
+			entryIdx: i,
+			repoName: e.repo.Name,
+		})
+		for j, f := range e.status.Files {
+			path := f.File
+			if strings.Contains(path, " -> ") {
+				parts := strings.SplitN(path, " -> ", 2)
+				path = parts[1]
+			}
+			rows = append(rows, row{
+				kind:     rowFile,
+				entryIdx: i,
+				fileIdx:  j,
+				repoName: e.repo.Name,
+				filePath: path,
+				fileXY:   f.XY,
+			})
+		}
+	}
+	return rows
+}
+
+func (m gitModel) Init() tea.Cmd { return nil }
+
+func (m gitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+	case tea.KeyMsg:
+		if m.viewing {
+			return m.updateDetail(msg)
+		}
+		return m.updateList(msg)
+	}
+	return m, nil
+}
+
+func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "ctrl+c":
+		return m, tea.Quit
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		} else if len(m.rows) > 0 {
+			m.cursor = len(m.rows) - 1
+		}
+	case "down", "j":
+		if m.cursor < len(m.rows)-1 {
+			m.cursor++
+		} else {
+			m.cursor = 0
+		}
+	case "enter", "right", "l":
+		if m.cursor < len(m.rows) && m.rows[m.cursor].kind == rowFile {
+			r := m.rows[m.cursor]
+			e := m.entries[r.entryIdx]
+			m.diff = git.Diff(e.repo.Path, r.filePath, r.fileXY)
+			m.viewing = true
+			m.detail = ui.Scroll{}
+		}
+	}
+	return m, nil
+}
+
+func (m gitModel) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	switch key {
+	case "q", "esc", "backspace", "left", "h":
+		m.viewing = false
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	default:
+		m.detail.HandleKey(key)
+	}
+	return m, nil
+}
+
+func (m gitModel) View() string {
+	if m.viewing {
+		return m.viewDetail()
+	}
+	return m.viewList()
+}
+
+func (m gitModel) viewList() string {
+	if len(m.entries) == 0 {
+		return "No git repos found.\n"
+	}
+
+	var lines []string
+	for i, r := range m.rows {
+		isCursor := i == m.cursor
+		switch r.kind {
+		case rowRepo:
+			lines = append(lines, m.renderRepoRow(r, isCursor))
+		case rowFile:
+			lines = append(lines, m.renderFileRow(r, isCursor))
+		}
+	}
+
+	var b strings.Builder
+	listH := m.height - 2 // 1 for help, 1 for padding
+	if listH > 0 && len(lines) > listH {
+		start := ui.KeepCursorVisible(m.cursor, len(lines), listH)
+		lines = lines[start:]
+		if len(lines) > listH {
+			lines = lines[:listH]
+		}
+	}
+
+	for _, l := range lines {
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+
+	b.WriteString(ui.RenderHelp("↑/↓ navigate", "enter diff", "q quit"))
+	return b.String()
+}
+
+func (m gitModel) renderRepoRow(r row, cursor bool) string {
+	e := m.entries[r.entryIdx]
+	s := e.status
+
+	branch := s.Branch
+	age := ui.RelativeTime(s.Age)
+
+	// Build right-side info
+	var info []string
+	info = append(info, branch)
+	if age != "" {
+		info = append(info, age)
+	}
+	if !s.HasUpstream {
+		info = append(info, "∅")
+	} else if s.Ahead > 0 {
+		info = append(info, fmt.Sprintf("↑%d", s.Ahead))
+	}
+	if s.Behind > 0 {
+		info = append(info, fmt.Sprintf("↓%d", s.Behind))
+	}
+	if s.Stash > 0 {
+		info = append(info, fmt.Sprintf("≡%d", s.Stash))
+	}
+	if s.Tag != "" {
+		info = append(info, "@"+s.Tag)
+	}
+
+	right := strings.Join(info, "  ")
+	left := "── " + e.repo.Name + " "
+
+	// Compute dot fill
+	available := m.width - runewidth.StringWidth(left) - runewidth.StringWidth(right) - 4 // margins
+	if available < 3 {
+		available = 3
+	}
+	dots := strings.Repeat("·", available)
+
+	if cursor {
+		return ui.Cursor.Render("▸ "+e.repo.Name+" ") +
+			ui.Cursor.Render(dots+" ") +
+			ui.Cursor.Render(right)
+	}
+
+	// Style the right side parts individually
+	var styledRight []string
+	if !s.IsClean {
+		styledRight = append(styledRight, ui.Cyan.Render(branch))
+	} else {
+		styledRight = append(styledRight, branch)
+	}
+	if age != "" {
+		styledRight = append(styledRight, ui.Faint.Render(age))
+	}
+	if !s.HasUpstream {
+		styledRight = append(styledRight, ui.Faint.Render("∅"))
+	} else if s.Ahead > 0 {
+		styledRight = append(styledRight, ui.Green.Render(fmt.Sprintf("↑%d", s.Ahead)))
+	}
+	if s.Behind > 0 {
+		styledRight = append(styledRight, ui.Red.Render(fmt.Sprintf("↓%d", s.Behind)))
+	}
+	if s.Stash > 0 {
+		styledRight = append(styledRight, fmt.Sprintf("≡%d", s.Stash))
+	}
+	if s.Tag != "" {
+		styledRight = append(styledRight, ui.Yellow.Render("@"+s.Tag))
+	}
+
+	return ui.Faint.Render("  ── ") + ui.Bold.Render(e.repo.Name) + " " +
+		ui.Faint.Render(dots+" ") +
+		strings.Join(styledRight, "  ")
+}
+
+func (m gitModel) renderFileRow(r row, cursor bool) string {
+	e := m.entries[r.entryIdx]
+	f := e.status.Files[r.fileIdx]
+
+	fileLines := renderFile(f)
+	line := fileLines[0]
+	// For renames, join both lines
+	if len(fileLines) > 1 {
+		line = strings.Join(fileLines, " ")
+	}
+
+	if cursor {
+		// Strip existing styling for cursor — re-render plain
+		ch, _ := fileSign(f.XY)
+		plain := string(ch) + " " + f.File
+		return ui.Cursor.Render("  ▸ " + plain)
+	}
+	return "    " + line
+}
+
+func (m gitModel) viewDetail() string {
+	var b strings.Builder
+
+	r := m.rows[m.cursor]
+	title := r.repoName + " — " + r.filePath
+	b.WriteString(styleDetailTitle.Render("← " + title))
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("─", min(m.width, 80)))
+	b.WriteString("\n")
+
+	lines := colorDiff(m.diff)
+
+	m.detail.Height = m.height - 4
+	if m.detail.Height < 1 {
+		m.detail.Height = 20
+	}
+	for _, l := range m.detail.Visible(lines) {
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+
+	b.WriteString(ui.RenderHelp("↑/↓ scroll", "g/G top/bottom", "← back"+m.detail.Percent()))
+	return b.String()
+}
+
+// ── Diff coloring ──
+
+func colorDiff(raw string) []string {
+	if raw == "" {
+		return []string{ui.Faint.Render("  (no diff)")}
+	}
+	src := strings.Split(strings.TrimRight(raw, "\n"), "\n")
+	out := make([]string, 0, len(src))
+	for _, line := range src {
+		out = append(out, colorDiffLine(line))
+	}
+	return out
+}
+
+func colorDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		return ui.Bold.Render(line)
+	case strings.HasPrefix(line, "@@"):
+		return ui.Cyan.Render(line)
+	case strings.HasPrefix(line, "+"):
+		return ui.Green.Render(line)
+	case strings.HasPrefix(line, "-"):
+		return ui.Red.Render(line)
+	case strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "):
+		return ui.Faint.Render(line)
+	default:
+		return line
+	}
+}
+
+// ── Shared file rendering ──
+
 func renderFile(f git.FileStatus) []string {
 	ch, style := fileSign(f.XY)
 	render := style.Render

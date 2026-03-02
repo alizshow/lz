@@ -84,6 +84,21 @@ func GetStatus(dir string) RepoStatus {
 	return s
 }
 
+// Diff returns the diff output for a single file in a repo.
+// It picks the right git command based on the porcelain status code.
+func Diff(dir, file, xy string) string {
+	// Untracked: show full contents as a diff
+	if xy == "??" {
+		return gitOutput(dir, "diff", "--no-index", "--", "/dev/null", file)
+	}
+	// Staged changes (index column has a letter)
+	if xy[0] != ' ' {
+		return gitOutput(dir, "diff", "--cached", "--", file)
+	}
+	// Unstaged working-tree changes
+	return gitOutput(dir, "diff", "--", file)
+}
+
 func gitLine(dir string, args ...string) string {
 	return strings.TrimSpace(gitOutput(dir, args...))
 }
