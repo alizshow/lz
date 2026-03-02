@@ -29,7 +29,7 @@ cmd/
 internal/
   git/
     discover.go      Finds git repos at cwd and 1-level children
-    status.go        Parses `git status --porcelain`, branch, tags, stash, diff
+    status.go        Parses `git status --porcelain`, branch, tags, stash entries, commits, diff
   ui/
     styles.go        Shared lipgloss color/style constants
     format.go        Formatting helpers (relative time, padding)
@@ -38,7 +38,7 @@ internal/
 
 **Task discovery** (`tsk.go`): walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` to find project root. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`).
 
-**Git status** (`git.go`): BubbleTea TUI with flat row model (repo headers + file entries). Enter on a file shows colored diff. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
+**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
 
 ## Dependencies
 

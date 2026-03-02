@@ -69,8 +69,8 @@ func discoverFromDir(root string) ([]Repo, error) {
 }
 
 func isGitDir(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil && info.IsDir()
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 func splitTab(s string) (string, string, bool) {

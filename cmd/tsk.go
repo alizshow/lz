@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"os"
 	"os/exec"
@@ -473,7 +474,8 @@ func (m tskModel) openEditor() tea.Cmd {
 		return nil
 	}
 	task := m.filtered[m.cursor]
-	c := exec.Command("vim", task.Path)
+	editor := cmp.Or(os.Getenv("VISUAL"), os.Getenv("EDITOR"), "vim")
+	c := exec.Command(editor, task.Path)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorDoneMsg{err}
 	})
@@ -530,6 +532,9 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab":
 		m.filter = (m.filter + 1) % 4
+		m.applyFilter()
+	case "shift+tab":
+		m.filter = (m.filter + 3) % 4
 		m.applyFilter()
 	case "enter", "right", "l":
 		if len(m.filtered) > 0 {

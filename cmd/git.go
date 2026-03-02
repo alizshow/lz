@@ -458,6 +458,10 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = (m.tab + 1) % 3
 		m.rebuildRows()
 		m.cursor = m.firstNonRepo()
+	case "shift+tab":
+		m.tab = (m.tab + 2) % 3
+		m.rebuildRows()
+		m.cursor = m.firstNonRepo()
 	case "enter", "right", "l":
 		if m.cursor >= len(m.rows) {
 			break
