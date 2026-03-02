@@ -13,6 +13,7 @@ import (
 	"aliz/lz/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -395,6 +396,25 @@ var (
 	styleDetailTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")).Padding(0, 1)
 )
 
+func renderMarkdown(content string, width int) string {
+	w := width - 4 // leave some margin
+	if w < 40 {
+		w = 40
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(w),
+	)
+	if err != nil {
+		return content
+	}
+	out, err := r.Render(content)
+	if err != nil {
+		return content
+	}
+	return out
+}
+
 // ── Model ──
 
 type tskModel struct {
@@ -406,6 +426,7 @@ type tskModel struct {
 	viewing     bool
 	scroll      int
 	content     string
+	rendered    string
 	detailTitle string
 	width       int
 	height      int
@@ -465,6 +486,9 @@ func (m tskModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.viewing && m.content != "" {
+			m.rendered = renderMarkdown(m.content, m.width)
+		}
 	case editorDoneMsg:
 		m.viewing = false
 		cursor := m.cursor
@@ -511,8 +535,10 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			data, err := os.ReadFile(task.Path)
 			if err != nil {
 				m.content = fmt.Sprintf("Error reading file: %v", err)
+				m.rendered = m.content
 			} else {
 				m.content = string(data)
+				m.rendered = renderMarkdown(m.content, m.width)
 			}
 			m.detailTitle = task.Title
 			m.viewing = true
@@ -751,7 +777,13 @@ func (m tskModel) viewDetail() string {
 	b.WriteString(strings.Repeat("─", min(m.width, 60)))
 	b.WriteString("\n")
 
-	lines := strings.Split(m.content, "\n")
+	rendered := m.rendered
+	lines := strings.Split(rendered, "\n")
+	// glamour adds a trailing newline; trim empty last line
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
 	vh := m.viewportHeight()
 	if vh < 1 {
 		vh = 20
