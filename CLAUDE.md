@@ -38,7 +38,9 @@ internal/
 
 **Task discovery** (`tsk.go`): walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` to find project root. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`).
 
-**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
+**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. Repo headers use column-aligned layout with variable dot-fill (shared between TUI and `-l` modes). Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
+
+**Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Detail view uses full terminal width.
 
 ## Dependencies
 

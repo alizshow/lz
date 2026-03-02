@@ -398,14 +398,11 @@ var (
 )
 
 func renderMarkdown(content string, width int) string {
-	w := width - 4 // leave some margin
+	w := width - 4
 	if w < 40 {
 		w = 40
 	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(w),
-	)
+	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(w))
 	if err != nil {
 		return content
 	}
@@ -468,6 +465,7 @@ func (m *tskModel) applyFilter() {
 }
 
 type editorDoneMsg struct{ err error }
+type renderDoneMsg struct{ rendered string }
 
 func (m tskModel) openEditor() tea.Cmd {
 	if len(m.filtered) == 0 {
@@ -489,10 +487,9 @@ func (m tskModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.detail.Height = max(msg.Height-4, 1)
-		if m.viewing && m.content != "" {
-			m.rendered = renderMarkdown(m.content, m.width)
-			m.detail.Total = len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
-		}
+	case renderDoneMsg:
+		m.rendered = msg.rendered
+		m.detail.Total = len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
 	case editorDoneMsg:
 		m.viewing = false
 		cursor := m.cursor
@@ -545,12 +542,16 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.rendered = m.content
 			} else {
 				m.content = string(data)
-				m.rendered = renderMarkdown(m.content, m.width)
+				m.rendered = m.content // show raw until render completes
 			}
 			m.detailTitle = task.Title
 			m.viewing = true
 			total := len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
 			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: total}
+			content, width := m.content, m.width
+			return m, func() tea.Msg {
+				return renderDoneMsg{rendered: renderMarkdown(content, width)}
+			}
 		}
 	case "e":
 		return m, m.openEditor()
@@ -757,7 +758,7 @@ func (m tskModel) viewDetail() string {
 	header := styleDetailTitle.Render("← " + m.detailTitle)
 	b.WriteString(header)
 	b.WriteString("\n")
-	b.WriteString(strings.Repeat("─", min(m.width, 60)))
+	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
 	lines := strings.Split(m.rendered, "\n")

@@ -244,15 +244,23 @@ type row struct {
 	stashMsg   string
 }
 
+// repoCol holds precomputed column strings for a single repo header.
+type repoCol struct {
+	branch, age, ahead, behind, stash, tag string
+}
+
 type gitModel struct {
-	entries []repoEntry
-	rows    []row
-	cursor  int
-	tab     gitTab
-	viewing bool
+	entries  []repoEntry
+	repoCols []repoCol // parallel to entries
+	colW     [6]int    // max width per column: branch, age, ahead, behind, stash, tag
+	maxNameW int       // max repo name width
+	rows     []row
+	cursor   int
+	tab      gitTab
+	viewing  bool
 	detail    ui.Scroll
 	diffLines []string
-	contentW int // natural width computed from row content
+	primaryW int // width of name-through-age section (dots fill the gap)
 	width    int
 	height   int
 }
@@ -263,9 +271,40 @@ func initialGitModel() (gitModel, error) {
 		return gitModel{}, err
 	}
 	m := gitModel{entries: entries, tab: tabStatus}
+	m.computeRepoCols()
 	m.rebuildRows()
 	m.cursor = m.firstNonRepo()
 	return m, nil
+}
+
+func (m *gitModel) computeRepoCols() {
+	m.repoCols = make([]repoCol, len(m.entries))
+	m.colW = [6]int{}
+	m.maxNameW = 0
+	for i, e := range m.entries {
+		s := e.status
+		c := &m.repoCols[i]
+		c.branch = s.Branch
+		c.age = ui.RelativeTime(s.Age)
+		if !s.HasUpstream {
+			c.ahead = "∅"
+		} else if s.Ahead > 0 {
+			c.ahead = fmt.Sprintf("↑%d", s.Ahead)
+		}
+		if s.Behind > 0 {
+			c.behind = fmt.Sprintf("↓%d", s.Behind)
+		}
+		if s.Stash > 0 {
+			c.stash = fmt.Sprintf("≡%d", s.Stash)
+		}
+		if s.Tag != "" {
+			c.tag = "@" + s.Tag
+		}
+		for j, v := range [6]string{c.branch, c.age, c.ahead, c.behind, c.stash, c.tag} {
+			m.colW[j] = max(m.colW[j], runewidth.StringWidth(v))
+		}
+		m.maxNameW = max(m.maxNameW, runewidth.StringWidth(e.repo.Name))
+	}
 }
 
 func (m *gitModel) rebuildRows() {
@@ -277,52 +316,26 @@ func (m *gitModel) rebuildRows() {
 	case tabStash:
 		m.rows = flattenStashRows(m.entries)
 	}
-	m.contentW = m.computeContentWidth()
+	m.primaryW = m.computePrimaryWidth()
 }
 
-// computeContentWidth returns the natural width needed to display all rows
-// without stretching to the terminal edge.
-func (m gitModel) computeContentWidth() int {
-	w := 0
+// computePrimaryWidth returns the width of the "name···dots···branch  age"
+// section. Same approach as runGitList's primaryW.
+func (m gitModel) computePrimaryWidth() int {
+	maxLeftW := 3 + m.maxNameW + 1 // "── name "
+	w := max(60, maxLeftW+3+1+m.colW[0]+1+m.colW[1])
+
 	for _, r := range m.rows {
-		var rw int
 		switch r.kind {
 		case rowFile:
-			rw = 5 + runewidth.StringWidth(r.filePath) // "    M file"
+			w = max(w, 5+runewidth.StringWidth(r.filePath))
 		case rowCommit:
-			// "    hash  subject  age"
-			rw = 4 + len(r.commitHash) + 2 + runewidth.StringWidth(r.commitMsg) + 2 + len(ui.RelativeTime(r.commitTime))
+			w = max(w, 4+len(r.commitHash)+2+runewidth.StringWidth(r.commitMsg)+2+len(ui.RelativeTime(r.commitTime)))
 		case rowStash:
-			idx := "stash@{" + r.stashIndex + "}"
-			rw = 4 + len(idx) + 2 + runewidth.StringWidth(r.stashMsg)
-		case rowRepo:
-			e := m.entries[r.entryIdx]
-			s := e.status
-			// "── name  branch  age  ↑N  ↓N  ≡N  @tag"
-			rw = 3 + runewidth.StringWidth(e.repo.Name) + 1
-			rw += 1 + len(s.Branch)
-			age := ui.RelativeTime(s.Age)
-			if age != "" {
-				rw += 2 + len(age)
-			}
-			if !s.HasUpstream {
-				rw += 2 + 1
-			} else if s.Ahead > 0 {
-				rw += 2 + len(fmt.Sprintf("↑%d", s.Ahead))
-			}
-			if s.Behind > 0 {
-				rw += 2 + len(fmt.Sprintf("↓%d", s.Behind))
-			}
-			if s.Stash > 0 {
-				rw += 2 + len(fmt.Sprintf("≡%d", s.Stash))
-			}
-			if s.Tag != "" {
-				rw += 2 + 1 + len(s.Tag)
-			}
+			w = max(w, 4+len("stash@{"+r.stashIndex+"}")+2+runewidth.StringWidth(r.stashMsg))
 		}
-		w = max(w, rw)
 	}
-	return max(w, 40)
+	return w
 }
 
 func flattenCommitRows(entries []repoEntry) []row {
@@ -570,75 +583,72 @@ func (m gitModel) viewList() string {
 func (m gitModel) renderRepoRow(r row, cursor bool) string {
 	e := m.entries[r.entryIdx]
 	s := e.status
+	c := m.repoCols[r.entryIdx]
 
-	branch := s.Branch
-	age := ui.RelativeTime(s.Age)
-
-	// Build right-side info
-	var info []string
-	info = append(info, branch)
-	if age != "" {
-		info = append(info, age)
+	pad := func(s string, w int) string {
+		return s + strings.Repeat(" ", max(w-runewidth.StringWidth(s), 0))
 	}
-	if !s.HasUpstream {
-		info = append(info, "∅")
-	} else if s.Ahead > 0 {
-		info = append(info, fmt.Sprintf("↑%d", s.Ahead))
-	}
-	if s.Behind > 0 {
-		info = append(info, fmt.Sprintf("↓%d", s.Behind))
-	}
-	if s.Stash > 0 {
-		info = append(info, fmt.Sprintf("≡%d", s.Stash))
-	}
-	if s.Tag != "" {
-		info = append(info, "@"+s.Tag)
+	padS := func(styled, plain string, w int) string {
+		return styled + strings.Repeat(" ", max(w-runewidth.StringWidth(plain), 0))
 	}
 
-	right := strings.Join(info, "  ")
+	// Dots fill between "── name " and "branch  age" (variable per row)
 	left := "── " + e.repo.Name + " "
+	dotsW := max(m.primaryW-runewidth.StringWidth(left)-runewidth.StringWidth(c.branch)-m.colW[1]-2, 3)
+	dots := strings.Repeat("·", dotsW)
 
-	// Compute dot fill
-	available := m.contentW - runewidth.StringWidth(left) - runewidth.StringWidth(right) - 2
-	if available < 3 {
-		available = 3
+	// Extra columns (ahead, behind, stash, tag) appended after primary
+	extras := [4]string{c.ahead, c.behind, c.stash, c.tag}
+	var extraPlain string
+	for i := 2; i < 6; i++ {
+		if m.colW[i] > 0 {
+			extraPlain += " " + pad(extras[i-2], m.colW[i])
+		}
 	}
-	dots := strings.Repeat("·", available)
 
 	if cursor {
-		return ui.Cursor.Render("▸ "+e.repo.Name+" ") +
-			ui.Cursor.Render(dots+" ") +
-			ui.Cursor.Render(right)
+		return ui.Cursor.Render("▸ " + e.repo.Name + " " + dots + " " + c.branch + " " + pad(c.age, m.colW[1]) + extraPlain)
 	}
 
-	// Style the right side parts individually
-	var styledRight []string
+	// Styled branch
+	var branchStyled string
 	if !s.IsClean {
-		styledRight = append(styledRight, ui.Cyan.Render(branch))
+		branchStyled = ui.Cyan.Render(c.branch)
 	} else {
-		styledRight = append(styledRight, branch)
+		branchStyled = c.branch
 	}
-	if age != "" {
-		styledRight = append(styledRight, ui.Faint.Render(age))
+	age := padS(ui.Faint.Render(c.age), c.age, m.colW[1])
+
+	// Styled extras
+	type colStyle struct {
+		val   string
+		style func(string) string
 	}
-	if !s.HasUpstream {
-		styledRight = append(styledRight, ui.Faint.Render("∅"))
-	} else if s.Ahead > 0 {
-		styledRight = append(styledRight, ui.Green.Render(fmt.Sprintf("↑%d", s.Ahead)))
+	extraStyles := [4]colStyle{
+		{c.ahead, func(v string) string {
+			if v == "∅" {
+				return ui.Faint.Render(v)
+			}
+			return ui.Green.Render(v)
+		}},
+		{c.behind, func(v string) string { return ui.Red.Render(v) }},
+		{c.stash, func(v string) string { return v }},
+		{c.tag, func(v string) string { return ui.Yellow.Render(v) }},
 	}
-	if s.Behind > 0 {
-		styledRight = append(styledRight, ui.Red.Render(fmt.Sprintf("↓%d", s.Behind)))
-	}
-	if s.Stash > 0 {
-		styledRight = append(styledRight, fmt.Sprintf("≡%d", s.Stash))
-	}
-	if s.Tag != "" {
-		styledRight = append(styledRight, ui.Yellow.Render("@"+s.Tag))
+	var extraStyled string
+	for i := 2; i < 6; i++ {
+		if m.colW[i] > 0 {
+			es := extraStyles[i-2]
+			if es.val != "" {
+				extraStyled += " " + padS(es.style(es.val), es.val, m.colW[i])
+			} else {
+				extraStyled += " " + pad("", m.colW[i])
+			}
+		}
 	}
 
 	return ui.Faint.Render("  ── ") + ui.Bold.Render(e.repo.Name) + " " +
-		ui.Faint.Render(dots+" ") +
-		strings.Join(styledRight, "  ")
+		ui.Faint.Render(dots) + " " + branchStyled + " " + age + extraStyled
 }
 
 func (m gitModel) renderFileRow(r row, cursor bool) string {
@@ -664,7 +674,7 @@ func (m gitModel) renderFileRow(r row, cursor bool) string {
 func (m gitModel) renderCommitRow(r row, cursor bool) string {
 	hash := r.commitHash
 	age := ui.RelativeTime(r.commitTime)
-	subject := ui.Truncate(r.commitMsg, max(m.contentW-20, 30))
+	subject := ui.Truncate(r.commitMsg, max(m.primaryW-20, 30))
 
 	if cursor {
 		return ui.Cursor.Render("  ▸ " + hash + "  " + subject + "  " + age)
@@ -674,7 +684,7 @@ func (m gitModel) renderCommitRow(r row, cursor bool) string {
 
 func (m gitModel) renderStashRow(r row, cursor bool) string {
 	idx := "stash@{" + r.stashIndex + "}"
-	subject := ui.Truncate(r.stashMsg, max(m.contentW-20, 30))
+	subject := ui.Truncate(r.stashMsg, max(m.primaryW-20, 30))
 
 	if cursor {
 		return ui.Cursor.Render("  ▸ " + idx + "  " + subject)
@@ -699,7 +709,7 @@ func (m gitModel) viewDetail() string {
 	}
 	b.WriteString(styleDetailTitle.Render("← " + title))
 	b.WriteString("\n")
-	b.WriteString(strings.Repeat("─", min(m.width, 80)))
+	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
 	for _, l := range m.detail.Visible(m.diffLines) {
