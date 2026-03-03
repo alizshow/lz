@@ -787,7 +787,11 @@ func (m gitModel) viewDetail() string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	for _, l := range m.detail.Visible(m.diffLines) {
+	var wrapped []string
+	for _, l := range m.diffLines {
+		wrapped = append(wrapped, ui.WrapLine(l, m.width)...)
+	}
+	for _, l := range m.detail.Visible(wrapped) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}

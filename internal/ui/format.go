@@ -92,6 +92,63 @@ func Superscript(n int) string {
 	return b.String()
 }
 
+// WrapLine soft-wraps a single string (which may contain ANSI escapes) into
+// lines of at most width visible cells. ANSI state is carried across breaks.
+func WrapLine(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	runes := []rune(s)
+	var lines []string
+	var cur strings.Builder
+	var activeSeq string
+	visW := 0
+
+	for i := 0; i < len(runes); {
+		// ANSI escape sequence: \x1b[ ... m
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			j := i + 2
+			for j < len(runes) && runes[j] != 'm' {
+				j++
+			}
+			if j < len(runes) {
+				seq := string(runes[i : j+1])
+				cur.WriteString(seq)
+				if seq == "\x1b[0m" || seq == "\x1b[m" {
+					activeSeq = ""
+				} else {
+					activeSeq = seq
+				}
+				i = j + 1
+				continue
+			}
+		}
+
+		rw := runewidth.RuneWidth(runes[i])
+		if visW+rw > width {
+			if activeSeq != "" {
+				cur.WriteString("\x1b[0m")
+			}
+			lines = append(lines, cur.String())
+			cur.Reset()
+			if activeSeq != "" {
+				cur.WriteString(activeSeq)
+			}
+			visW = 0
+		}
+		cur.WriteRune(runes[i])
+		visW += rw
+		i++
+	}
+	if cur.Len() > 0 {
+		lines = append(lines, cur.String())
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
 // RenderHelp formats a help bar string in faint style.
 func RenderHelp(parts ...string) string {
 	return Faint.Render(strings.Join(parts, " · "))
