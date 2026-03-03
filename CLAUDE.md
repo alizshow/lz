@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `lz` is a personal CLI toolkit written in Go. Two commands:
 
 - `lz t` / `lz tsk` — Task browser TUI (BubbleTea)
-- `lz g` / `lz git` — Multi-repo git status TUI (`-l` for non-interactive list)
+- `lz g` / `lz git` — Multi-repo git status TUI (`-l` status, `-c` commits, `-s` stash for non-interactive)
 
 ## Build & Run
 
@@ -25,7 +25,7 @@ just vet                # go vet ./...
 main.go              CLI dispatcher (switch on os.Args[1])
 cmd/
   tsk.go             Task browser — BubbleTea Model with Init/Update/View
-  git.go             Git status TUI — BubbleTea Model, flat row list + diff detail view (-l for non-interactive)
+  git.go             Git status TUI — BubbleTea Model, flat row list + diff detail view (-l/-c/-s for non-interactive)
 internal/
   git/
     discover.go      Finds git repos at cwd and 1-level children
@@ -40,7 +40,7 @@ internal/
 
 **Shared helpers** (`tsk.go`): `statusPresentation()` maps Status → (icon, headerStyle, taskStyle) — used by both list and TUI modes. `computeTskLayout()` computes column widths shared between `runTskList` and `viewList`.
 
-**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. `computeRepoCols()` is a standalone function that computes column strings + widths for repo headers, shared between TUI and `-l` modes. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. `-l` flag for non-interactive output.
+**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. `computeRepoCols()` is a standalone function that computes column strings + widths for repo headers, shared between TUI and list modes. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. Non-interactive flags: `-l` (status), `-c` (commits), `-s` (stash).
 
 **Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Terminal style (dark/light) is detected once at startup before alt screen via `detectGlamourStyle()` (avoids OSC timeout); the renderer is recreated per render with the current terminal width. Detail view uses full terminal width.
 

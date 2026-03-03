@@ -17,11 +17,17 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// RunGit launches the git status TUI, or prints a list with -l/--list.
+// RunGit launches the git status TUI, or prints a non-interactive list with
+// -l (status), -c (commits), or -s (stash).
 func RunGit() error {
 	for _, arg := range os.Args[2:] {
-		if arg == "-l" || arg == "--list" {
+		switch arg {
+		case "-l", "--list":
 			return runGitList()
+		case "-c", "--commits":
+			return runGitCommitList()
+		case "-s", "--stash":
+			return runGitStashList()
 		}
 	}
 
@@ -183,6 +189,211 @@ func runGitList() error {
 			}
 		}
 		prevDirty = !e.status.IsClean
+	}
+	return nil
+}
+
+// ── Non-interactive commits list (lz g -c) ──
+
+func runGitCommitList() error {
+	entries, err := gatherEntries()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("No git repos found.")
+		return nil
+	}
+
+	cols, cw, _ := computeRepoCols(entries)
+
+	// Build rows to compute widths.
+	rows := flattenCommitRows(entries)
+	maxHashW := 0
+	maxRowAge := 0
+	maxTagW := 0
+	for _, r := range rows {
+		if r.kind == rowCommit {
+			maxHashW = max(maxHashW, len(r.commitHash))
+			maxRowAge = max(maxRowAge, len(ui.RelativeTime(r.commitTime)))
+			if r.commitTag != "" {
+				maxTagW = max(maxTagW, runewidth.StringWidth("@"+r.commitTag))
+			}
+		}
+	}
+
+	// Primary width: same logic as computePrimaryWidth for tabCommits.
+	maxNameW := 0
+	for _, e := range entries {
+		maxNameW = max(maxNameW, runewidth.StringWidth(e.repo.Name))
+	}
+	maxLeftW := 3 + maxNameW + 1
+	ageW := max(cw[1], maxRowAge)
+	primaryW := max(60, maxLeftW+3+1+cw[0]+1+ageW)
+	for _, r := range rows {
+		if r.kind == rowCommit {
+			rw := maxHashW + 2 + runewidth.StringWidth(r.commitMsg) + ageW + 6
+			if r.commitTag != "" {
+				rw += runewidth.StringWidth("@" + r.commitTag)
+			}
+			primaryW = max(primaryW, rw)
+		}
+	}
+
+	padStyled := func(styled, plain string, maxW int) string {
+		return styled + strings.Repeat(" ", maxW-runewidth.StringWidth(plain))
+	}
+
+	for i, e := range entries {
+		// Repo header: name ··dots·· branch  age
+		c := cols[i]
+		left := fmt.Sprintf("── %s ", e.repo.Name)
+		branchW := runewidth.StringWidth(c.branch)
+		dotsW := max(primaryW-runewidth.StringWidth(left)-branchW-ageW-2, 3)
+
+		var branchStyled string
+		if e.status.IsClean {
+			branchStyled = c.branch
+		} else {
+			branchStyled = ui.Cyan.Render(c.branch)
+		}
+		age := padStyled(ui.Faint.Render(c.age), c.age, ageW)
+
+		fmt.Printf("%s%s %s %s\n",
+			ui.Faint.Render("── ")+ui.Bold.Render(e.repo.Name)+" ",
+			ui.Faint.Render(strings.Repeat("·", dotsW)),
+			branchStyled,
+			age,
+		)
+
+		// Commit rows
+		for _, r := range rows {
+			if r.kind != rowCommit || r.entryIdx != i {
+				continue
+			}
+			hash := r.commitHash
+			hashPad := strings.Repeat(" ", max(maxHashW-len(hash), 0))
+			commitAge := ui.RelativeTime(r.commitTime)
+
+			var tagPlain string
+			if r.commitTag != "" {
+				tagPlain = "@" + r.commitTag
+			}
+
+			middleW := max(primaryW-maxHashW-ageW-6, 20)
+			subjectW := middleW
+			if tagPlain != "" {
+				subjectW = max(middleW-runewidth.StringWidth(tagPlain), 10)
+			}
+			subject := ui.Truncate(r.commitMsg, subjectW)
+			dotsW := max(subjectW-runewidth.StringWidth(subject), 0)
+			dots := strings.Repeat("·", dotsW)
+
+			tagStyled := ""
+			if tagPlain != "" {
+				tagStyled = ui.Green.Render(tagPlain)
+			}
+
+			fmt.Printf("   %s%s  %s%s%s  %s\n",
+				ui.Yellow.Render(hash), hashPad,
+				subject, ui.Faint.Render(dots), tagStyled,
+				ui.Faint.Render(commitAge),
+			)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+// ── Non-interactive stash list (lz g -s) ──
+
+func runGitStashList() error {
+	entries, err := gatherEntries()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("No git repos found.")
+		return nil
+	}
+
+	cols, cw, _ := computeRepoCols(entries)
+
+	// Build rows to compute widths.
+	rows := flattenStashRows(entries)
+	maxIdxW := 0
+	maxStashAge := 0
+	for _, r := range rows {
+		if r.kind == rowStash {
+			maxIdxW = max(maxIdxW, len("stash@{"+r.stashIndex+"}"))
+			maxStashAge = max(maxStashAge, len(ui.RelativeTime(r.stashTime)))
+		}
+	}
+
+	if len(rows) == 0 {
+		fmt.Println("No stashes found.")
+		return nil
+	}
+
+	// Primary width: same logic as computePrimaryWidth for tabStash.
+	maxNameW := 0
+	for _, e := range entries {
+		maxNameW = max(maxNameW, runewidth.StringWidth(e.repo.Name))
+	}
+	maxLeftW := 3 + maxNameW + 1
+	primaryW := max(60, maxLeftW+3+1+cw[0])
+	for _, r := range rows {
+		if r.kind == rowStash {
+			rw := maxIdxW + 2 + runewidth.StringWidth(r.stashMsg) + maxStashAge + 6
+			primaryW = max(primaryW, rw)
+		}
+	}
+
+	for i, e := range entries {
+		if len(e.status.Stashes) == 0 {
+			continue
+		}
+
+		// Repo header: name ··dots·· branch
+		c := cols[i]
+		left := fmt.Sprintf("── %s ", e.repo.Name)
+		branchW := runewidth.StringWidth(c.branch)
+		dotsW := max(primaryW-runewidth.StringWidth(left)-branchW-1, 3)
+
+		var branchStyled string
+		if e.status.IsClean {
+			branchStyled = c.branch
+		} else {
+			branchStyled = ui.Cyan.Render(c.branch)
+		}
+
+		fmt.Printf("%s%s %s\n",
+			ui.Faint.Render("── ")+ui.Bold.Render(e.repo.Name)+" ",
+			ui.Faint.Render(strings.Repeat("·", dotsW)),
+			branchStyled,
+		)
+
+		// Stash rows
+		for _, r := range rows {
+			if r.kind != rowStash || r.entryIdx != i {
+				continue
+			}
+			idx := "stash@{" + r.stashIndex + "}"
+			idxPad := strings.Repeat(" ", max(maxIdxW-len(idx), 0))
+			age := ui.RelativeTime(r.stashTime)
+
+			middleW := max(primaryW-maxIdxW-maxStashAge-6, 30)
+			subject := ui.Truncate(r.stashMsg, middleW)
+			dotsW := max(middleW-runewidth.StringWidth(subject), 0)
+			dots := strings.Repeat("·", dotsW)
+
+			fmt.Printf("   %s%s  %s%s  %s\n",
+				ui.Yellow.Render(idx), idxPad,
+				subject, ui.Faint.Render(dots),
+				ui.Faint.Render(age),
+			)
+		}
+		fmt.Println()
 	}
 	return nil
 }

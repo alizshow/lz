@@ -35,5 +35,5 @@ func printUsage() {
 	fmt.Println("lz — personal CLI toolkit")
 	fmt.Println()
 	fmt.Println("  lz t, lz tsk    task browser TUI [-l/--list] [-a/--all]")
-	fmt.Println("  lz g, lz git    multi-repo git status TUI [-l/--list]")
+	fmt.Println("  lz g, lz git    multi-repo git status TUI [-l status] [-c commits] [-s stash]")
 }
