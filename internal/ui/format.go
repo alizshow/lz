@@ -81,6 +81,17 @@ func Truncate(s string, max int) string {
 	return string(result) + "…"
 }
 
+// Superscript converts a non-negative integer to Unicode superscript digits.
+func Superscript(n int) string {
+	sup := [10]rune{'⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'}
+	s := fmt.Sprintf("%d", n)
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteRune(sup[r-'0'])
+	}
+	return b.String()
+}
+
 // RenderHelp formats a help bar string in faint style.
 func RenderHelp(parts ...string) string {
 	return Faint.Render(strings.Join(parts, " · "))

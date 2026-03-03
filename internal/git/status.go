@@ -12,6 +12,7 @@ import (
 type RepoStatus struct {
 	Branch      string
 	Tag         string
+	TagAhead    int // commits ahead of tag (0 = HEAD is at tag)
 	Ahead       int
 	Behind      int
 	Stashes     []StashEntry
@@ -37,8 +38,19 @@ func GetStatus(dir string) RepoStatus {
 		s.Branch = "HEAD"
 	}
 
-	// latest tag
-	s.Tag = gitLine(dir, "describe", "--tags", "--abbrev=0")
+	// latest tag (full describe: "v1.0.0" or "v1.0.0-3-gabcdef")
+	if desc := gitLine(dir, "describe", "--tags"); desc != "" {
+		// If it contains -N-gHASH suffix, HEAD is ahead of the tag
+		if i := strings.LastIndex(desc, "-g"); i > 0 {
+			prefix := desc[:i] // "v1.0.0-3"
+			if j := strings.LastIndex(prefix, "-"); j > 0 {
+				s.Tag = prefix[:j]
+				s.TagAhead, _ = strconv.Atoi(prefix[j+1:])
+			}
+		} else {
+			s.Tag = desc
+		}
+	}
 
 	// ahead/behind
 	upstream := gitLine(dir, "rev-parse", "--abbrev-ref", "@{upstream}")
@@ -53,11 +65,11 @@ func GetStatus(dir string) RepoStatus {
 	}
 
 	// stash
-	stashOut := gitOutput(dir, "stash", "list", "--format=%gd%x00%s")
+	stashOut := gitOutput(dir, "stash", "list", "--format=%gd%x00%s%x00%ct")
 	if stashOut != "" {
 		for _, line := range strings.Split(strings.TrimRight(stashOut, "\n"), "\n") {
-			parts := strings.SplitN(line, "\x00", 2)
-			if len(parts) < 2 {
+			parts := strings.SplitN(line, "\x00", 3)
+			if len(parts) < 3 {
 				continue
 			}
 			// parts[0] is like "stash@{0}", extract the index
@@ -65,9 +77,14 @@ func GetStatus(dir string) RepoStatus {
 			if i := strings.Index(idx, "{"); i >= 0 {
 				idx = strings.TrimRight(idx[i+1:], "}")
 			}
+			var stashTime time.Time
+			if epoch, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
+				stashTime = time.Unix(epoch, 0)
+			}
 			s.Stashes = append(s.Stashes, StashEntry{
 				Index:   idx,
 				Message: parts[1],
+				Time:    stashTime,
 			})
 		}
 	}
@@ -122,6 +139,7 @@ func Diff(dir, file, xy string) string {
 type StashEntry struct {
 	Index   string // e.g. "0", "1"
 	Message string
+	Time    time.Time
 }
 
 // Commit holds a single parsed git log entry.
@@ -129,28 +147,40 @@ type Commit struct {
 	Hash    string    // short hash (7 chars)
 	Subject string    // first line of commit message
 	Time    time.Time // author time
+	Tag     string    // tag name if this commit is tagged
 }
 
 // RecentCommits returns the last n commits for a repo.
 func RecentCommits(dir string, n int) []Commit {
-	out := gitOutput(dir, "log", fmt.Sprintf("--format=%%h%%x00%%s%%x00%%ct"), "-n", strconv.Itoa(n))
+	out := gitOutput(dir, "log", "--decorate-refs=refs/tags", fmt.Sprintf("--format=%%h%%x00%%s%%x00%%ct%%x00%%D"), "-n", strconv.Itoa(n))
 	if out == "" {
 		return nil
 	}
 	var commits []Commit
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		parts := strings.SplitN(line, "\x00", 3)
-		if len(parts) < 3 {
+		parts := strings.SplitN(line, "\x00", 4)
+		if len(parts) < 4 {
 			continue
 		}
 		var t time.Time
 		if epoch, err := strconv.ParseInt(parts[2], 10, 64); err == nil {
 			t = time.Unix(epoch, 0)
 		}
+		var tag string
+		if parts[3] != "" {
+			for _, ref := range strings.Split(parts[3], ", ") {
+				ref = strings.TrimSpace(ref)
+				if strings.HasPrefix(ref, "tag: ") {
+					tag = strings.TrimPrefix(ref, "tag: ")
+					break
+				}
+			}
+		}
 		commits = append(commits, Commit{
 			Hash:    parts[0],
 			Subject: parts[1],
 			Time:    t,
+			Tag:     tag,
 		})
 	}
 	return commits
