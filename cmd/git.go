@@ -783,10 +783,20 @@ func (m gitModel) viewList() string {
 	b.WriteString("\n\n")
 
 	var lines []string
+	cursorLine := 0
 	for i, r := range m.rows {
 		isCursor := i == m.cursor
+		if isCursor {
+			cursorLine = len(lines)
+		}
 		switch r.kind {
 		case rowRepo:
+			if i > 0 {
+				lines = append(lines, "")
+				if isCursor {
+					cursorLine = len(lines)
+				}
+			}
 			lines = append(lines, m.renderRepoRow(r))
 		case rowFile:
 			lines = append(lines, m.renderFileRow(r, isCursor))
@@ -799,7 +809,7 @@ func (m gitModel) viewList() string {
 
 	listH := m.height - 4 // tab bar + blank + help + padding
 	if listH > 0 && len(lines) > listH {
-		start := ui.KeepCursorVisible(m.cursor, len(lines), listH)
+		start := ui.KeepCursorVisible(cursorLine, len(lines), listH)
 		lines = lines[start:]
 		if len(lines) > listH {
 			lines = lines[:listH]
