@@ -444,6 +444,12 @@ func (m tskModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.detail.Height = max(msg.Height-4, 1)
+		if m.viewing {
+			styleOpt, content, width := m.styleOpt, m.content, msg.Width
+			return m, func() tea.Msg {
+				return renderDoneMsg{rendered: renderMarkdown(styleOpt, content, width)}
+			}
+		}
 	case renderDoneMsg:
 		m.rendered = msg.rendered
 		m.detail.Total = len(strings.Split(strings.TrimRight(m.rendered, "\n"), "\n"))
