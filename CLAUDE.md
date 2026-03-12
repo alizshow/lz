@@ -32,7 +32,7 @@ internal/
     status.go        Parses `git status --porcelain`, branch, tags, stash entries, commits, diff
   ui/
     styles.go        Shared lipgloss color/style constants (DetailTitle, Cursor, colors)
-    format.go        Formatting helpers (RelativeTime, DotFill, Truncate, RenderTabBar, RenderHelp)
+    format.go        Formatting helpers (RelativeTime, DotFill, Truncate, PadStyled, RenderTabBar, RenderHelp)
     scroll.go        Reusable scroll viewport (used by both TUIs)
 ```
 
@@ -40,7 +40,7 @@ internal/
 
 **Shared helpers** (`tsk.go`): `statusPresentation()` maps Status → (icon, headerStyle, taskStyle) — used by both list and TUI modes. `computeTskLayout()` computes column widths shared between `runTskList` and `viewList`.
 
-**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. `computeRepoCols()` is a standalone function that computes column strings + widths for repo headers, shared between TUI and list modes. Accepts repos from stdin (tab-separated name/path) or auto-discovers them. Non-interactive flags: `-l` (status), `-c` (commits), `-s` (stash).
+**Git status** (`git.go`): BubbleTea TUI with three tabs (Status, Commits, Stash) and flat row model (repo headers + entry rows). Enter on an entry shows colored diff. Tab/shift+tab cycles tabs. Cursor skips repo header rows. `computeRepoCols()` is a standalone function that computes column strings + widths for repo headers, shared between TUI and list modes. Diff detail view caches wrapped lines (`wrappedLines`) via `rewrapDiff()`; rewrap on enter and on terminal resize only (not per-render). Accepts repos from stdin (tab-separated name/path) or auto-discovers them. Non-interactive flags: `-l` (status), `-c` (commits), `-s` (stash).
 
 **Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Terminal style (dark/light) is detected once at startup before alt screen via `detectGlamourStyle()` (avoids OSC timeout); the renderer is recreated per render with the current terminal width. Detail view uses full terminal width.
 

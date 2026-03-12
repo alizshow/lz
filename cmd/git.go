@@ -109,9 +109,6 @@ func runGitList() error {
 
 	cols, cw, _ := computeRepoCols(entries)
 
-	padStyled := func(styled, plain string, maxW int) string {
-		return styled + strings.Repeat(" ", maxW-runewidth.StringWidth(plain))
-	}
 	renderExtra := func(c repoCol) string {
 		var parts []string
 		if cw[2] > 0 {
@@ -121,13 +118,13 @@ func runGitList() error {
 			} else {
 				s = ui.Green.Render(c.ahead)
 			}
-			parts = append(parts, padStyled(s, c.ahead, cw[2]))
+			parts = append(parts, ui.PadStyled(s, c.ahead, cw[2]))
 		}
 		if cw[3] > 0 {
-			parts = append(parts, padStyled(ui.Red.Render(c.behind), c.behind, cw[3]))
+			parts = append(parts, ui.PadStyled(ui.Red.Render(c.behind), c.behind, cw[3]))
 		}
 		if cw[4] > 0 {
-			parts = append(parts, padStyled(c.stash, c.stash, cw[4]))
+			parts = append(parts, ui.PadStyled(c.stash, c.stash, cw[4]))
 		}
 		if cw[5] > 0 {
 			var tagStyled string
@@ -136,7 +133,7 @@ func runGitList() error {
 			} else {
 				tagStyled = ui.Green.Render(c.tag)
 			}
-			parts = append(parts, padStyled(tagStyled, c.tag, cw[5]))
+			parts = append(parts, ui.PadStyled(tagStyled, c.tag, cw[5]))
 		}
 		return strings.Join(parts, " ")
 	}
@@ -168,7 +165,7 @@ func runGitList() error {
 			branchStyled = ui.Cyan.Render(cols[i].branch)
 		}
 
-		age := padStyled(ui.Faint.Render(cols[i].age), cols[i].age, cw[1])
+		age := ui.PadStyled(ui.Faint.Render(cols[i].age), cols[i].age, cw[1])
 		extra := renderExtra(cols[i])
 
 		fmt.Printf("%s%s %s %s",
@@ -205,7 +202,7 @@ func runGitCommitList() error {
 		return nil
 	}
 
-	cols, cw, _ := computeRepoCols(entries)
+	cols, cw, maxNameW := computeRepoCols(entries)
 
 	// Build rows to compute widths.
 	rows := flattenCommitRows(entries)
@@ -223,10 +220,6 @@ func runGitCommitList() error {
 	}
 
 	// Primary width: same logic as computePrimaryWidth for tabCommits.
-	maxNameW := 0
-	for _, e := range entries {
-		maxNameW = max(maxNameW, runewidth.StringWidth(e.repo.Name))
-	}
 	maxLeftW := 3 + maxNameW + 1
 	ageW := max(cw[1], maxRowAge)
 	primaryW := max(60, maxLeftW+3+1+cw[0]+1+ageW)
@@ -238,10 +231,6 @@ func runGitCommitList() error {
 			}
 			primaryW = max(primaryW, rw)
 		}
-	}
-
-	padStyled := func(styled, plain string, maxW int) string {
-		return styled + strings.Repeat(" ", maxW-runewidth.StringWidth(plain))
 	}
 
 	for i, e := range entries {
@@ -257,7 +246,7 @@ func runGitCommitList() error {
 		} else {
 			branchStyled = ui.Cyan.Render(c.branch)
 		}
-		age := padStyled(ui.Faint.Render(c.age), c.age, ageW)
+		age := ui.PadStyled(ui.Faint.Render(c.age), c.age, ageW)
 
 		fmt.Printf("%s%s %s %s\n",
 			ui.Faint.Render("── ")+ui.Bold.Render(e.repo.Name)+" ",
@@ -317,7 +306,7 @@ func runGitStashList() error {
 		return nil
 	}
 
-	cols, cw, _ := computeRepoCols(entries)
+	cols, cw, maxNameW := computeRepoCols(entries)
 
 	// Build rows to compute widths.
 	rows := flattenStashRows(entries)
@@ -336,10 +325,6 @@ func runGitStashList() error {
 	}
 
 	// Primary width: same logic as computePrimaryWidth for tabStash.
-	maxNameW := 0
-	for _, e := range entries {
-		maxNameW = max(maxNameW, runewidth.StringWidth(e.repo.Name))
-	}
 	maxLeftW := 3 + maxNameW + 1
 	primaryW := max(60, maxLeftW+3+1+cw[0])
 	for _, r := range rows {
@@ -421,7 +406,6 @@ type row struct {
 	kind       rowKind
 	entryIdx   int // index into gitModel.entries
 	fileIdx    int // index into entries[entryIdx].status.Files (only for rowFile)
-	repoName   string
 	filePath   string
 	fileXY     string
 	commitHash string
@@ -447,9 +431,10 @@ type gitModel struct {
 	rows     []row
 	cursor   int
 	tab      gitTab
-	viewing  bool
-	detail    ui.Scroll
-	diffLines []string
+	viewing      bool
+	detail       ui.Scroll
+	diffLines    []string
+	wrappedLines []string // cached wrapped diff lines
 	primaryW  int // width of name-through-age section (dots fill the gap)
 	maxHashW    int // max commit hash width (for commits tab alignment)
 	maxIdxW     int // max stash index label width (for stash tab alignment)
@@ -582,6 +567,14 @@ func (m gitModel) computePrimaryWidth() int {
 	}
 }
 
+// rewrapDiff recomputes wrappedLines from diffLines at the current width.
+func (m *gitModel) rewrapDiff() {
+	m.wrappedLines = nil
+	for _, l := range m.diffLines {
+		m.wrappedLines = append(m.wrappedLines, ui.WrapLine(l, m.width)...)
+	}
+}
+
 // effectiveW returns primaryW capped at terminal width (the width rule).
 func (m gitModel) effectiveW() int {
 	if m.width > 0 {
@@ -596,7 +589,6 @@ func flattenCommitRows(entries []repoEntry) []row {
 		rows = append(rows, row{
 			kind:     rowRepo,
 			entryIdx: i,
-			repoName: e.repo.Name,
 		})
 		for j, c := range e.commits {
 			if j >= defaultHistoryLimit {
@@ -605,7 +597,6 @@ func flattenCommitRows(entries []repoEntry) []row {
 			rows = append(rows, row{
 				kind:       rowCommit,
 				entryIdx:   i,
-				repoName:   e.repo.Name,
 				commitHash: c.Hash,
 				commitMsg:  c.Subject,
 				commitTime: c.Time,
@@ -625,7 +616,6 @@ func flattenStashRows(entries []repoEntry) []row {
 		rows = append(rows, row{
 			kind:     rowRepo,
 			entryIdx: i,
-			repoName: e.repo.Name,
 		})
 		for j, s := range e.status.Stashes {
 			if j >= defaultHistoryLimit {
@@ -634,7 +624,6 @@ func flattenStashRows(entries []repoEntry) []row {
 			rows = append(rows, row{
 				kind:       rowStash,
 				entryIdx:   i,
-				repoName:   e.repo.Name,
 				stashIndex: s.Index,
 				stashMsg:   s.Message,
 				stashTime:  s.Time,
@@ -650,7 +639,6 @@ func flattenRows(entries []repoEntry) []row {
 		rows = append(rows, row{
 			kind:     rowRepo,
 			entryIdx: i,
-			repoName: e.repo.Name,
 		})
 		for j, f := range e.status.Files {
 			path := f.File
@@ -662,7 +650,6 @@ func flattenRows(entries []repoEntry) []row {
 				kind:     rowFile,
 				entryIdx: i,
 				fileIdx:  j,
-				repoName: e.repo.Name,
 				filePath: path,
 				fileXY:   f.XY,
 			})
@@ -700,6 +687,10 @@ func (m gitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.detail.Height = max(msg.Height-4, 1)
+		if m.viewing {
+			m.rewrapDiff()
+			m.detail.Total = len(m.wrappedLines)
+		}
 	case tea.KeyMsg:
 		if m.viewing {
 			return m.updateDetail(msg)
@@ -745,7 +736,8 @@ func (m gitModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r.kind != rowRepo {
 			m.diffLines = colorDiff(raw)
 			m.viewing = true
-			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.diffLines)}
+			m.rewrapDiff()
+			m.detail = ui.Scroll{Height: max(m.height-4, 1), Total: len(m.wrappedLines)}
 		}
 	}
 	return m, nil
@@ -861,13 +853,6 @@ func (m gitModel) renderRepoRow(r row) string {
 			ui.Faint.Render(strings.Repeat("·", dotsW)) + " " + branchStyled
 	}
 
-	pad := func(s string, w int) string {
-		return s + strings.Repeat(" ", max(w-runewidth.StringWidth(s), 0))
-	}
-	padS := func(styled, plain string, w int) string {
-		return styled + strings.Repeat(" ", max(w-runewidth.StringWidth(plain), 0))
-	}
-
 	// Dots fill between "── name " and "branch  age" (variable per row)
 	left := "── " + e.repo.Name + " "
 	dotsW := max(m.primaryW-runewidth.StringWidth(left)-runewidth.StringWidth(c.branch)-m.colW[1]-2, 3)
@@ -880,7 +865,7 @@ func (m gitModel) renderRepoRow(r row) string {
 	} else {
 		branchStyled = c.branch
 	}
-	age := padS(ui.Faint.Render(c.age), c.age, m.colW[1])
+	age := ui.PadStyled(ui.Faint.Render(c.age), c.age, m.colW[1])
 
 	// Styled extras
 	type colStyle struct {
@@ -908,9 +893,9 @@ func (m gitModel) renderRepoRow(r row) string {
 		if m.colW[i] > 0 {
 			es := extraStyles[i-2]
 			if es.val != "" {
-				extraStyled += " " + padS(es.style(es.val), es.val, m.colW[i])
+				extraStyled += " " + ui.PadStyled(es.style(es.val), es.val, m.colW[i])
 			} else {
-				extraStyled += " " + pad("", m.colW[i])
+				extraStyled += " " + ui.PadStyled("", "", m.colW[i])
 			}
 		}
 	}
@@ -992,27 +977,24 @@ func (m gitModel) viewDetail() string {
 	var b strings.Builder
 
 	r := m.rows[m.cursor]
+	name := m.entries[r.entryIdx].repo.Name
 	var title string
 	switch r.kind {
 	case rowFile:
-		title = r.repoName + " — " + r.filePath
+		title = name + " — " + r.filePath
 	case rowCommit:
-		title = r.repoName + " — " + r.commitHash + " " + r.commitMsg
+		title = name + " — " + r.commitHash + " " + r.commitMsg
 	case rowStash:
-		title = r.repoName + " — stash@{" + r.stashIndex + "} " + r.stashMsg
+		title = name + " — stash@{" + r.stashIndex + "} " + r.stashMsg
 	default:
-		title = r.repoName
+		title = name
 	}
 	b.WriteString(ui.DetailTitle.Render("← " + title))
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	var wrapped []string
-	for _, l := range m.diffLines {
-		wrapped = append(wrapped, ui.WrapLine(l, m.width)...)
-	}
-	for _, l := range m.detail.Visible(wrapped) {
+	for _, l := range m.detail.Visible(m.wrappedLines) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}

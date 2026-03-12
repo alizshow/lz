@@ -294,11 +294,15 @@ func extractTitle(path string) string {
 var (
 	styleInProgress = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
 	styleTodo       = lipgloss.NewStyle()
+	styleTodoHeader = lipgloss.NewStyle().Bold(true)
+	styleBacklog    = ui.Faint
+	styleBacklogHdr = ui.Faint.Bold(true)
 	styleDone       = ui.FaintGreen
+	styleDoneHeader = ui.FaintGreen.Bold(true)
 	styleProject    = ui.Cyan
-	styleCursor = ui.Cursor
-	styleDots = ui.Faint
-	styleAge  = ui.Faint
+	styleCursor     = ui.Cursor
+	styleDots       = ui.Faint
+	styleAge        = ui.Faint
 )
 
 func statusPresentation(s Status) (icon string, header lipgloss.Style, task lipgloss.Style) {
@@ -306,13 +310,13 @@ func statusPresentation(s Status) (icon string, header lipgloss.Style, task lipg
 	case InProgress:
 		return "▶", styleInProgress, styleInProgress
 	case Todo:
-		return "○", lipgloss.NewStyle().Bold(true), styleTodo
+		return "○", styleTodoHeader, styleTodo
 	case Backlog:
-		return "◇", ui.Faint.Bold(true), ui.Faint
+		return "◇", styleBacklogHdr, styleBacklog
 	case Done:
-		return "✓", styleDone.Bold(true), styleDone
+		return "✓", styleDoneHeader, styleDone
 	}
-	return "", lipgloss.NewStyle(), lipgloss.NewStyle()
+	return "", styleTodo, styleTodo
 }
 
 // detectGlamourStyle runs the slow OSC terminal background query once and
@@ -574,12 +578,10 @@ func (m tskModel) viewList() string {
 	for _, status := range order {
 		g := groups[status]
 
-		icon, headerStyle, _ := statusPresentation(status)
+		icon, headerStyle, taskStyle := statusPresentation(status)
 		lines = append(lines, headerStyle.Render(fmt.Sprintf(" %s %s", icon, status.String())))
 
 		for _, entry := range g.tasks {
-			_, _, taskStyle := statusPresentation(entry.task.Status)
-
 			projPadded := fmt.Sprintf("%-*s", lay.maxProjLen, entry.task.Project)
 			age := ui.RelativeTime(entry.task.ModTime)
 

@@ -149,6 +149,12 @@ func WrapLine(s string, width int) []string {
 	return lines
 }
 
+// PadStyled right-pads a styled string with spaces so it occupies exactly w
+// visible cells. plain is the unstyled text used to measure current width.
+func PadStyled(styled, plain string, w int) string {
+	return styled + strings.Repeat(" ", max(w-runewidth.StringWidth(plain), 0))
+}
+
 // RenderHelp formats a help bar string in faint style.
 func RenderHelp(parts ...string) string {
 	return Faint.Render(strings.Join(parts, " · "))
