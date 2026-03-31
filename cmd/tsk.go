@@ -30,6 +30,15 @@ const (
 	Done
 )
 
+// Priority levels (lower value = higher priority, for natural sort).
+type Priority int
+
+const (
+	PriorityHigh   Priority = 0
+	PriorityNormal Priority = 1
+	PriorityLow    Priority = 2
+)
+
 func (s Status) String() string {
 	switch s {
 	case InProgress:
@@ -52,6 +61,7 @@ const (
 	FilterBacklog
 	FilterDone
 	FilterAll
+	FilterNoDone // like FilterAll but excludes Done (CLI only, not in TUI tab cycle)
 )
 
 // Task is a single task file discovered from a .tasks/ directory.
@@ -60,24 +70,27 @@ type Task struct {
 	Filename string
 	Project  string
 	Status   Status
+	Priority Priority
 	Path     string
 	ModTime  time.Time
 }
 
 // RunTsk launches the task browser TUI, or prints a list with --list.
 func RunTsk() error {
-	var listMode, showAll bool
+	var listMode, showAll, showDone bool
 	for _, arg := range os.Args[2:] {
 		switch arg {
 		case "--list", "-l":
 			listMode = true
 		case "--all", "-a":
 			showAll = true
+		case "--done", "-d":
+			showDone = true
 		}
 	}
 
-	if listMode || showAll {
-		return runTskList(showAll)
+	if listMode || showAll || showDone {
+		return runTskList(showAll, showDone)
 	}
 
 	root := findRoot()
@@ -94,13 +107,18 @@ func RunTsk() error {
 }
 
 // runTskList prints tasks to stdout (non-interactive mode).
-func runTskList(showAll bool) error {
+func runTskList(showAll, showDone bool) error {
 	root := findRoot()
 	tasks := discoverTasks(root)
 
 	filter := FilterActive
-	if showAll {
+	switch {
+	case showAll && showDone:
 		filter = FilterAll
+	case showAll:
+		filter = FilterNoDone
+	case showDone:
+		filter = FilterDone
 	}
 	m := tskModel{allTasks: tasks, filter: filter}
 	m.applyFilter()
@@ -143,8 +161,10 @@ func runTskList(showAll bool) error {
 			age := ui.RelativeTime(t.ModTime)
 			titleW := runewidth.StringWidth(t.Title)
 			dots := ui.DotFill(lay.lineW - lay.prefixW - titleW - 1 - len(age))
+			pri := priorityIndicator(t.Priority, t.Status)
 
-			fmt.Printf("  %s  %s%s %s  %s\n",
+			fmt.Printf("%s %s  %s%s %s  %s\n",
+				pri,
 				styleProject.Render(projPadded),
 				taskStyle.Render(t.Title),
 				styleDots.Render(dots),
@@ -231,11 +251,13 @@ func discoverTasks(root string) []Task {
 				// Fallback: support legacy current.md single file
 				cur := filepath.Join(tasksDir, "current.md")
 				if info, err := os.Stat(cur); err == nil {
+					meta := extractMeta(cur)
 					tasks = append(tasks, Task{
-						Title:    extractTitle(cur),
+						Title:    meta.Title,
 						Filename: "current.md",
 						Project:  p.name,
 						Status:   InProgress,
+						Priority: meta.Priority,
 						Path:     cur,
 						ModTime:  info.ModTime(),
 					})
@@ -258,35 +280,80 @@ func scanTaskDir(dir string, status Status, project string, files []os.DirEntry,
 		if err == nil {
 			mt = info.ModTime()
 		}
+		meta := extractMeta(fp)
 		*tasks = append(*tasks, Task{
-			Title:    extractTitle(fp),
+			Title:    meta.Title,
 			Filename: f.Name(),
 			Project:  project,
 			Status:   status,
+			Priority: meta.Priority,
 			Path:     fp,
 			ModTime:  mt,
 		})
 	}
 }
 
-func extractTitle(path string) string {
+type taskMeta struct {
+	Title    string
+	Priority Priority
+}
+
+func extractMeta(path string) taskMeta {
 	f, err := os.Open(path)
 	if err != nil {
-		return filepath.Base(path)
+		return taskMeta{Title: filepath.Base(path), Priority: PriorityNormal}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
+	meta := taskMeta{Priority: PriorityNormal}
 	scanner := bufio.NewScanner(f)
+
+	// Parse optional YAML frontmatter (--- fenced).
+	if scanner.Scan() {
+		first := scanner.Text()
+		if first == "---" {
+			for scanner.Scan() {
+				line := scanner.Text()
+				if line == "---" {
+					break
+				}
+				if v, ok := strings.CutPrefix(line, "priority:"); ok {
+					switch strings.TrimSpace(v) {
+					case "high":
+						meta.Priority = PriorityHigh
+					case "low":
+						meta.Priority = PriorityLow
+					}
+				}
+			}
+		} else {
+			// First line wasn't frontmatter — check it for a heading.
+			if t, ok := strings.CutPrefix(first, "## "); ok {
+				meta.Title = t
+				return meta
+			}
+			if t, ok := strings.CutPrefix(first, "# "); ok {
+				meta.Title = t
+				return meta
+			}
+		}
+	}
+
+	// Scan remaining lines for first heading.
 	for scanner.Scan() {
 		line := scanner.Text()
 		if t, ok := strings.CutPrefix(line, "## "); ok {
-			return t
+			meta.Title = t
+			return meta
 		}
 		if t, ok := strings.CutPrefix(line, "# "); ok {
-			return t
+			meta.Title = t
+			return meta
 		}
 	}
-	return strings.TrimSuffix(filepath.Base(path), ".md")
+
+	meta.Title = strings.TrimSuffix(filepath.Base(path), ".md")
+	return meta
 }
 
 // ── Styles ──
@@ -304,6 +371,23 @@ var (
 	styleDots       = ui.Faint
 	styleAge        = ui.Faint
 )
+
+var stylePriorityHigh = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
+
+// priorityIndicator returns a 1-char prefix for priority display.
+// Only meaningful for Todo/Backlog; empty for InProgress/Done.
+func priorityIndicator(p Priority, s Status) string {
+	if s == InProgress || s == Done {
+		return " "
+	}
+	switch p {
+	case PriorityHigh:
+		return stylePriorityHigh.Render("!")
+	case PriorityLow:
+		return styleDots.Render("·")
+	}
+	return " "
+}
 
 func statusPresentation(s Status) (icon string, header lipgloss.Style, task lipgloss.Style) {
 	switch s {
@@ -375,6 +459,9 @@ func (m *tskModel) applyFilter() {
 		if m.filter == FilterActive && (status == Done || status == Backlog) {
 			continue
 		}
+		if m.filter == FilterNoDone && status == Done {
+			continue
+		}
 		if m.filter == FilterBacklog && status != Backlog {
 			continue
 		}
@@ -387,9 +474,14 @@ func (m *tskModel) applyFilter() {
 				m.filtered = append(m.filtered, t)
 			}
 		}
+		group := m.filtered[start:]
 		if status == Done {
-			slices.SortFunc(m.filtered[start:], func(a, b Task) int {
+			slices.SortFunc(group, func(a, b Task) int {
 				return b.ModTime.Compare(a.ModTime)
+			})
+		} else {
+			slices.SortStableFunc(group, func(a, b Task) int {
+				return int(a.Priority) - int(b.Priority)
 			})
 		}
 	}
@@ -419,6 +511,37 @@ func computeTskLayout(tasks []Task, cursorCol bool) tskLayout {
 	}
 	l.lineW = l.prefixW + l.maxTitleW + 3 + 1 + l.maxAgeLen
 	return l
+}
+
+// setTaskPriority rewrites a task file's frontmatter to set the given priority.
+// Normal priority removes the frontmatter entirely (it's the default).
+func setTaskPriority(path string, p Priority) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+
+	// Strip existing frontmatter.
+	body := content
+	if strings.HasPrefix(content, "---\n") {
+		if end := strings.Index(content[4:], "\n---\n"); end >= 0 {
+			body = strings.TrimLeft(content[4+end+5:], "\n")
+		}
+	}
+
+	// Rebuild with new frontmatter.
+	var out string
+	switch p {
+	case PriorityHigh:
+		out = "---\npriority: high\n---\n\n" + body
+	case PriorityNormal:
+		out = "---\npriority: normal\n---\n\n" + body
+	case PriorityLow:
+		out = "---\npriority: low\n---\n\n" + body
+	}
+
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 type editorDoneMsg struct{ err error }
@@ -516,6 +639,23 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return renderDoneMsg{rendered: renderMarkdown(styleOpt, content, width)}
 			}
 		}
+	case "1", "2", "3":
+		if len(m.filtered) > 0 {
+			task := m.filtered[m.cursor]
+			pri := map[string]Priority{"1": PriorityHigh, "2": PriorityNormal, "3": PriorityLow}[msg.String()]
+			if task.Priority != pri {
+				_ = setTaskPriority(task.Path, pri)
+				path := task.Path
+				m.allTasks = discoverTasks(m.root)
+				m.applyFilter()
+				for i, t := range m.filtered {
+					if t.Path == path {
+						m.cursor = i
+						break
+					}
+				}
+			}
+		}
 	case "e":
 		return m, m.openEditor()
 	}
@@ -595,22 +735,24 @@ func (m tskModel) viewList() string {
 			dots := ui.DotFill(lay.lineW - lay.prefixW - titleW - 1 - len(age))
 
 			cursor := "  "
-			var proj, title, styledDots, styledAge string
+			var pri, proj, title, styledDots, styledAge string
 
 			if entry.index == m.cursor {
 				cursor = styleCursor.Render("▸ ")
+				pri = styleCursor.Render(" ")
 				proj = styleCursor.Render(projPadded)
 				title = styleCursor.Render(entry.task.Title)
 				styledDots = styleCursor.Render(dots)
 				styledAge = styleCursor.Render(age)
 			} else {
+				pri = priorityIndicator(entry.task.Priority, entry.task.Status)
 				proj = styleProject.Render(projPadded)
 				title = taskStyle.Render(entry.task.Title)
 				styledDots = styleDots.Render(dots)
 				styledAge = styleAge.Render(age)
 			}
 
-			line := fmt.Sprintf(" %s%s  %s%s %s", cursor, proj, title, styledDots, styledAge)
+			line := fmt.Sprintf("%s%s%s  %s%s %s", pri, cursor, proj, title, styledDots, styledAge)
 			lines = append(lines, line)
 		}
 		lines = append(lines, "")
@@ -644,7 +786,7 @@ func (m tskModel) viewList() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(ui.RenderHelp("↑/↓ navigate", "→ open", "e edit", "tab filter", "q quit"))
+	b.WriteString(ui.RenderHelp("↑/↓ navigate", "→ open", "e edit", "1/2/3 priority", "tab filter", "q quit"))
 
 	return b.String()
 }
