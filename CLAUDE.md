@@ -47,6 +47,9 @@ cmd/
   tsk.go             Task browser — BubbleTea Model with Init/Update/View
   git.go             Git status TUI — BubbleTea Model, flat row list + diff detail view
 internal/
+  config/
+    config.go        LzConfig (per-project .lz.yml), GlobalConfig (~/.lz/config.yml), Merge
+    discover.go      Recursive _tasks/ discovery with cascading .lz.yml config resolution
   git/
     discover.go      Finds git repos at cwd and 1-level children
     status.go        Parses `git status --porcelain`, branch, tags, stash entries, commits, diff
@@ -58,7 +61,11 @@ internal/
 
 **CLI dispatch** (`main.go`): Uses `urfave/cli/v3` for subcommand routing with `UseShortOptionHandling` for POSIX-style flag combining (`-xb`). Each subcommand delegates to an exported function in `cmd/`.
 
-**Task discovery** (`tsk.go`): `findRoot` walks up looking for `_tasks/` dir co-located with `justfile` or `CLAUDE.md` (prints stderr hint if not found). `discoverTasks` uses `scanTaskDir` helper to scan each status directory. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`). Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
+**Project discovery** (`internal/config/`): `Discover(root)` walks the directory tree with `filepath.WalkDir`, collecting `.lz.yml` config files and `_tasks/` directories in a single pass. Config cascades top→bottom: scalars override, lists (skip) append, `*bool` fields support nil=inherit. Hardcoded skip floor: `.git`, `node_modules`. Returns `[]Project` with resolved configs. `cmd/tsk.go` then scans each project's `_tasks/{current,todo,backlog,done}/*.md` into `[]Task`.
+
+**Config split**: Per-project `.lz.yml` controls discovery (skip, max_depth, project name) and sync behavior (enabled, project mapping, effort, on_delete). Global `~/.lz/config.yml` holds provider credentials (Notion API key, database ID).
+
+**Task discovery** (`tsk.go`): `findRoot` walks up looking for `.lz.yml` or `_tasks/` dir co-located with `justfile`/`CLAUDE.md` (prints stderr hint if not found). `discoverTasks` delegates to `config.Discover` for recursive project finding, then scans each project's task dirs. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`). Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
 
 **Task list** (`tsk.go`): `RunTaskList` uses additive flags — base output is active (current + todo), `-b` adds backlog, `-d` adds done, `-a` adds both, `-x` excludes active. Filter is a `map[Status]bool` inclusion set.
 
