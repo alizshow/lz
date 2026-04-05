@@ -17,20 +17,8 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// RunGit launches the git status TUI, or prints a non-interactive list with
-// -l (status), -c (commits), or -s (stash).
-func RunGit() error {
-	for _, arg := range os.Args[2:] {
-		switch arg {
-		case "-l", "--list":
-			return runGitList()
-		case "-c", "--commits":
-			return runGitCommitList()
-		case "-s", "--stash":
-			return runGitStashList()
-		}
-	}
-
+// RunGitTUI launches the interactive git status browser.
+func RunGitTUI() error {
 	m, err := initialGitModel()
 	if err != nil {
 		return err
@@ -97,7 +85,7 @@ func gatherEntries() ([]repoEntry, error) {
 
 // ── Non-interactive list mode (lz g -l) ──
 
-func runGitList() error {
+func RunGitStatus() error {
 	entries, err := gatherEntries()
 	if err != nil {
 		return err
@@ -192,7 +180,7 @@ func runGitList() error {
 
 // ── Non-interactive commits list (lz g -c) ──
 
-func runGitCommitList() error {
+func RunGitCommits() error {
 	entries, err := gatherEntries()
 	if err != nil {
 		return err
@@ -296,7 +284,7 @@ func runGitCommitList() error {
 
 // ── Non-interactive stash list (lz g -s) ──
 
-func runGitStashList() error {
+func RunGitStash() error {
 	entries, err := gatherEntries()
 	if err != nil {
 		return err

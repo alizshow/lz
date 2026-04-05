@@ -76,54 +76,87 @@ type Task struct {
 }
 
 // RunTsk launches the task browser TUI, or prints a list with --list.
-func RunTsk() error {
-	var listMode, showAll, showDone bool
-	for _, arg := range os.Args[2:] {
-		switch arg {
-		case "--list", "-l":
-			listMode = true
-		case "--all", "-a":
-			showAll = true
-		case "--done", "-d":
-			showDone = true
-		}
-	}
-
-	if listMode || showAll || showDone {
-		return runTskList(showAll, showDone)
-	}
-
+// RunTaskTUI launches the interactive task browser.
+func RunTaskTUI() error {
 	root := findRoot()
-
-	// Detect terminal style before entering alt screen — the OSC query
-	// for background color times out inside BubbleTea's alt screen.
-	// The renderer itself is recreated on resize with the correct width.
 	styleOpt := detectGlamourStyle()
-
 	m := initialModel(root, styleOpt)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
-// runTskList prints tasks to stdout (non-interactive mode).
-func runTskList(showAll, showDone bool) error {
+// RunTaskAdd creates a new task file in _tasks/backlog/.
+func RunTaskAdd(title string) error {
+	root := findRoot()
+	dir := filepath.Join(root, "_tasks", "backlog")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	name := slugify(title) + ".md"
+	path := filepath.Join(dir, name)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("task file already exists: %s", path)
+	}
+	return os.WriteFile(path, []byte("# "+title+"\n"), 0o644)
+}
+
+// RunTaskDone creates a new task file in _tasks/done/.
+func RunTaskDone(title string) error {
+	root := findRoot()
+	dir := filepath.Join(root, "_tasks", "done")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	name := slugify(title) + ".md"
+	path := filepath.Join(dir, name)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("task file already exists: %s", path)
+	}
+	return os.WriteFile(path, []byte("# "+title+"\n"), 0o644)
+}
+
+func slugify(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '_' || r == '-':
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// RunTaskList prints tasks to stdout (non-interactive mode).
+// Flags are additive: base output is active (current + todo).
+// -b adds backlog, -d adds done, -a adds both, -x excludes active.
+func RunTaskList(backlog, done, all, excludeActive bool) error {
 	root := findRoot()
 	tasks := discoverTasks(root)
 
-	filter := FilterActive
-	switch {
-	case showAll && showDone:
-		filter = FilterAll
-	case showAll:
-		filter = FilterNoDone
-	case showDone:
-		filter = FilterDone
+	include := map[Status]bool{InProgress: true, Todo: true}
+	if backlog || all {
+		include[Backlog] = true
 	}
-	m := tskModel{allTasks: tasks, filter: filter}
-	m.applyFilter()
+	if done || all {
+		include[Done] = true
+	}
+	if excludeActive {
+		delete(include, InProgress)
+		delete(include, Todo)
+	}
 
-	if len(m.filtered) == 0 {
+	var filtered []Task
+	for _, t := range tasks {
+		if include[t.Status] {
+			filtered = append(filtered, t)
+		}
+	}
+
+	if len(filtered) == 0 {
 		fmt.Println("No tasks found.")
 		return nil
 	}
@@ -135,7 +168,7 @@ func runTskList(showAll, showDone bool) error {
 	}
 	groups := make(map[Status]*group)
 	var order []Status
-	for _, t := range m.filtered {
+	for _, t := range filtered {
 		g, ok := groups[t.Status]
 		if !ok {
 			g = &group{status: t.Status}
@@ -146,7 +179,7 @@ func runTskList(showAll, showDone bool) error {
 	}
 	slices.Sort(order)
 
-	lay := computeTskLayout(m.filtered, false)
+	lay := computeTskLayout(filtered, false)
 
 	for _, status := range order {
 		g := groups[status]
