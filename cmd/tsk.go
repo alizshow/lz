@@ -64,7 +64,7 @@ const (
 	FilterNoDone // like FilterAll but excludes Done (CLI only, not in TUI tab cycle)
 )
 
-// Task is a single task file discovered from a .tasks/ directory.
+// Task is a single task file discovered from a _tasks/ directory.
 type Task struct {
 	Title    string
 	Filename string
@@ -183,7 +183,7 @@ func findRoot() string {
 		return "."
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(dir, ".tasks")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "_tasks")); err == nil {
 			if _, err := os.Stat(filepath.Join(dir, "justfile")); err == nil {
 				return dir
 			}
@@ -197,7 +197,7 @@ func findRoot() string {
 		}
 		dir = parent
 	}
-	fmt.Fprintln(os.Stderr, "lz t: no .tasks/ directory found (searched up to /)")
+	fmt.Fprintln(os.Stderr, "lz t: no _tasks/ directory found (searched up to /)")
 	cwd, _ := os.Getwd()
 	return cwd
 }
@@ -213,7 +213,7 @@ func discoverTasks(root string) []Task {
 	}
 
 	var projects []project
-	if info, err := os.Stat(filepath.Join(root, ".tasks")); err == nil && info.IsDir() {
+	if info, err := os.Stat(filepath.Join(root, "_tasks")); err == nil && info.IsDir() {
 		projects = append(projects, project{"root", root})
 	}
 
@@ -224,7 +224,7 @@ func discoverTasks(root string) []Task {
 				continue
 			}
 			child := filepath.Join(root, e.Name())
-			if info, err := os.Stat(filepath.Join(child, ".tasks")); err == nil && info.IsDir() {
+			if info, err := os.Stat(filepath.Join(child, "_tasks")); err == nil && info.IsDir() {
 				projects = append(projects, project{e.Name(), child})
 			}
 		}
@@ -241,7 +241,7 @@ func discoverTasks(root string) []Task {
 	}
 
 	for _, p := range projects {
-		tasksDir := filepath.Join(p.dir, ".tasks")
+		tasksDir := filepath.Join(p.dir, "_tasks")
 
 		for _, d := range dirs {
 			dir := filepath.Join(tasksDir, d.name)

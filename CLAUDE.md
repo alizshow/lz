@@ -36,7 +36,7 @@ internal/
     scroll.go        Reusable scroll viewport (used by both TUIs)
 ```
 
-**Task discovery** (`tsk.go`): `findRoot` walks up looking for `.tasks/` dir co-located with `justfile` or `CLAUDE.md` (prints stderr hint if not found). `discoverTasks` uses `scanTaskDir` helper to scan each status directory. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`). Non-interactive flags: `-l` (active), `-a` (add backlog), `-d` (add done), `-a -d` (all). Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
+**Task discovery** (`tsk.go`): `findRoot` walks up looking for `_tasks/` dir co-located with `justfile` or `CLAUDE.md` (prints stderr hint if not found). `discoverTasks` uses `scanTaskDir` helper to scan each status directory. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`). Non-interactive flags: `-l` (active), `-a` (add backlog), `-d` (add done), `-a -d` (all). Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
 
 **Shared helpers** (`tsk.go`): `statusPresentation()` maps Status → (icon, headerStyle, taskStyle) — used by both list and TUI modes. `computeTskLayout()` computes column widths shared between `runTskList` and `viewList`.
 

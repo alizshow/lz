@@ -35,7 +35,7 @@ Scans the current directory and its immediate children for git repos, then print
 
 ### `lz t` — Task browser TUI
 
-Interactive BubbleTea TUI for browsing `.tasks/` directories. Walks up from `cwd` to find a project root (co-located with `justfile` or `CLAUDE.md`).
+Interactive BubbleTea TUI for browsing `_tasks/` directories. Walks up from `cwd` to find a project root (co-located with `justfile` or `CLAUDE.md`).
 
 ```
  Active   Done   All
