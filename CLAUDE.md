@@ -21,7 +21,8 @@ lz task list -x/--exclude-active  # exclude active, combine with -b/-d
 lz task list -xb           # just backlog (short flag combining)
 lz task add <title>        # add to backlog
 lz task done <title>       # add to done
-lz task sync               # sync to Notion (stub)
+lz task sync               # sync tasks to Notion Work Log
+lz task sync -n/--dry-run  # preview sync plan without changes
 
 lz git                     # TUI browser (default)
 lz git status              # repo status list
@@ -50,6 +51,14 @@ internal/
   config/
     config.go        LzConfig (per-project .lz.yml), GlobalConfig (~/.lz/config.yml), Merge
     discover.go      Recursive _tasks/ discovery with cascading .lz.yml config resolution
+  sync/
+    sync.go          Diff engine — compares local tasks against state, produces create/update/delete plan
+    notion.go        Notion client (jomei/notionapi) — create, update, archive pages; status by ID
+    state.go         ~/.lz/sync.yml — maps task paths to Notion page IDs + last-known properties
+    lock.go          flock(2) on ~/.lz/sync.lock for concurrent sync prevention
+    log.go           Per-run log files in ~/.lz/logs/
+  task/
+    types.go         Task, Status, Priority, Effort types (shared by cmd/ and sync/)
   git/
     discover.go      Finds git repos at cwd and 1-level children
     status.go        Parses `git status --porcelain`, branch, tags, stash entries, commits, diff
@@ -75,8 +84,10 @@ internal/
 
 **Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Terminal style (dark/light) is detected once at startup before alt screen via `detectGlamourStyle()` (avoids OSC timeout); the renderer is recreated on enter and on terminal resize with the current width. Detail view uses full terminal width.
 
+**Notion sync** (`internal/sync/`): `RunSync` diffs local tasks (filtered by `sync.enabled` in `.lz.yml`) against `~/.lz/sync.yml` state file. Produces CREATE/UPDATE/DELETE/SKIP plan, prints it, then executes via `jomei/notionapi`. Status properties use Notion option IDs (not names) so renames in Notion UI don't break sync. State file maps absolute task file paths to Notion page IDs + last-known property values (title, status ID, project, effort). Cross-project moves are handled as delete+create. `flock(2)` prevents concurrent syncs. Per-run logs go to `~/.lz/logs/`. Global credentials in `~/.lz/config.yml`; per-project opt-in via `.lz.yml` `sync:` block (inherits through config cascade).
+
 **UI shared** (`ui/`): `RenderTabBar` renders tab bars for both TUIs. `RenderHelp` renders faint help bars. `DotFill` generates dot-leader strings. `DetailTitle` style is shared between both detail views.
 
 ## Dependencies
 
-Core: `urfave/cli/v3` (CLI framework), `charmbracelet/bubbletea` (TUI), `charmbracelet/lipgloss` (styling), `mattn/go-runewidth` (column widths). Go 1.25+.
+Core: `urfave/cli/v3` (CLI framework), `charmbracelet/bubbletea` (TUI), `charmbracelet/lipgloss` (styling), `mattn/go-runewidth` (column widths), `jomei/notionapi` (Notion API client). Go 1.25+.

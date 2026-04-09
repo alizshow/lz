@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"aliz/lz/internal/config"
+	lzsync "aliz/lz/internal/sync"
+	"aliz/lz/internal/task"
 	"aliz/lz/internal/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,39 +22,6 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
 )
-
-// Task status lifecycle.
-type Status int
-
-const (
-	InProgress Status = iota
-	Todo
-	Backlog
-	Done
-)
-
-// Priority levels (lower value = higher priority, for natural sort).
-type Priority int
-
-const (
-	PriorityHigh   Priority = 0
-	PriorityNormal Priority = 1
-	PriorityLow    Priority = 2
-)
-
-func (s Status) String() string {
-	switch s {
-	case InProgress:
-		return "In Progress"
-	case Todo:
-		return "Todo"
-	case Backlog:
-		return "Backlog"
-	case Done:
-		return "Done"
-	}
-	return ""
-}
 
 // Filter controls which tasks are visible.
 type Filter int
@@ -65,56 +34,18 @@ const (
 	FilterNoDone // like FilterAll but excludes Done (CLI only, not in TUI tab cycle)
 )
 
-// Effort levels for task sizing. M is the default (like PriorityNormal).
-type Effort int
 
-const (
-	EffortS  Effort = iota + 1
-	EffortM         // default
-	EffortL
-	EffortXL
-)
-
-func (e Effort) String() string {
-	switch e {
-	case EffortS:
-		return "S"
-	case EffortM:
-		return "M"
-	case EffortL:
-		return "L"
-	case EffortXL:
-		return "XL"
+// RunTaskSync syncs local tasks to Notion.
+func RunTaskSync(dryRun bool) error {
+	globalCfg, err := config.LoadGlobalConfig()
+	if err != nil {
+		return fmt.Errorf("load ~/.lz/config.yml: %w\n\nCreate it with:\n  mkdir -p ~/.lz\n  cat > ~/.lz/config.yml << 'EOF'\n  sync:\n    type: notion\n    notion:\n      api_key: ntn_...\n      database_id: YOUR_DATABASE_ID\n  EOF", err)
 	}
-	return ""
+	root := findRoot()
+	tasks, configs := discoverTasks(root)
+	return lzsync.RunSync(tasks, configs, globalCfg, dryRun)
 }
 
-func ParseEffort(s string) Effort {
-	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "S":
-		return EffortS
-	case "L":
-		return EffortL
-	case "XL":
-		return EffortXL
-	}
-	return EffortM
-}
-
-// Task is a single task file discovered from a _tasks/ directory.
-type Task struct {
-	Title    string
-	Filename string
-	Project  string
-	Status   Status
-	Priority Priority
-	Effort   Effort
-	Summary  string
-	Path     string
-	ModTime  time.Time
-}
-
-// RunTsk launches the task browser TUI, or prints a list with --list.
 // RunTaskTUI launches the interactive task browser.
 func RunTaskTUI() error {
 	root := findRoot()
@@ -176,19 +107,19 @@ func RunTaskList(backlog, done, all, excludeActive bool) error {
 	root := findRoot()
 	tasks, _ := discoverTasks(root)
 
-	include := map[Status]bool{InProgress: true, Todo: true}
+	include := map[task.Status]bool{task.InProgress: true, task.Todo: true}
 	if backlog || all {
-		include[Backlog] = true
+		include[task.Backlog] = true
 	}
 	if done || all {
-		include[Done] = true
+		include[task.Done] = true
 	}
 	if excludeActive {
-		delete(include, InProgress)
-		delete(include, Todo)
+		delete(include, task.InProgress)
+		delete(include, task.Todo)
 	}
 
-	var filtered []Task
+	var filtered []task.Task
 	for _, t := range tasks {
 		if include[t.Status] {
 			filtered = append(filtered, t)
@@ -202,11 +133,11 @@ func RunTaskList(backlog, done, all, excludeActive bool) error {
 
 	// Group by status.
 	type group struct {
-		status Status
-		tasks  []Task
+		status task.Status
+		tasks  []task.Task
 	}
-	groups := make(map[Status]*group)
-	var order []Status
+	groups := make(map[task.Status]*group)
+	var order []task.Status
 	for _, t := range filtered {
 		g, ok := groups[t.Status]
 		if !ok {
@@ -284,19 +215,19 @@ func findRoot() string {
 
 // ── Discovery ──
 
-func discoverTasks(root string) ([]Task, map[string]*config.LzConfig) {
+func discoverTasks(root string) ([]task.Task, map[string]*config.LzConfig) {
 	projects := config.Discover(root)
-	var tasks []Task
+	var tasks []task.Task
 	configs := make(map[string]*config.LzConfig, len(projects))
 
 	dirs := []struct {
 		name   string
-		status Status
+		status task.Status
 	}{
-		{"current", InProgress},
-		{"todo", Todo},
-		{"backlog", Backlog},
-		{"done", Done},
+		{"current", task.InProgress},
+		{"todo", task.Todo},
+		{"backlog", task.Backlog},
+		{"done", task.Done},
 	}
 
 	for _, p := range projects {
@@ -308,16 +239,16 @@ func discoverTasks(root string) ([]Task, map[string]*config.LzConfig) {
 			dir := filepath.Join(tasksDir, d.name)
 			if files, err := os.ReadDir(dir); err == nil {
 				scanTaskDir(dir, d.status, p.Name, files, &tasks)
-			} else if d.status == InProgress {
+			} else if d.status == task.InProgress {
 				// Fallback: support legacy current.md single file
 				cur := filepath.Join(tasksDir, "current.md")
 				if info, err := os.Stat(cur); err == nil {
 					meta := extractMeta(cur)
-					tasks = append(tasks, Task{
+					tasks = append(tasks, task.Task{
 						Title:    meta.Title,
 						Filename: "current.md",
 						Project:  p.Name,
-						Status:   InProgress,
+						Status:   task.InProgress,
 						Priority: meta.Priority,
 						Path:     cur,
 						ModTime:  info.ModTime(),
@@ -330,7 +261,7 @@ func discoverTasks(root string) ([]Task, map[string]*config.LzConfig) {
 	return tasks, configs
 }
 
-func scanTaskDir(dir string, status Status, project string, files []os.DirEntry, tasks *[]Task) {
+func scanTaskDir(dir string, status task.Status, project string, files []os.DirEntry, tasks *[]task.Task) {
 	for _, f := range files {
 		if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
 			continue
@@ -342,7 +273,7 @@ func scanTaskDir(dir string, status Status, project string, files []os.DirEntry,
 			mt = info.ModTime()
 		}
 		meta := extractMeta(fp)
-		*tasks = append(*tasks, Task{
+		*tasks = append(*tasks, task.Task{
 			Title:    meta.Title,
 			Filename: f.Name(),
 			Project:  project,
@@ -358,19 +289,19 @@ func scanTaskDir(dir string, status Status, project string, files []os.DirEntry,
 
 type taskMeta struct {
 	Title    string
-	Priority Priority
-	Effort   Effort
+	Priority task.Priority
+	Effort   task.Effort
 	Summary  string
 }
 
 func extractMeta(path string) taskMeta {
 	f, err := os.Open(path)
 	if err != nil {
-		return taskMeta{Title: filepath.Base(path), Priority: PriorityNormal, Effort: EffortM}
+		return taskMeta{Title: filepath.Base(path), Priority: task.PriorityNormal, Effort: task.EffortM}
 	}
 	defer func() { _ = f.Close() }()
 
-	meta := taskMeta{Priority: PriorityNormal, Effort: EffortM}
+	meta := taskMeta{Priority: task.PriorityNormal, Effort: task.EffortM}
 	scanner := bufio.NewScanner(f)
 
 	// Parse optional YAML frontmatter (--- fenced).
@@ -385,12 +316,12 @@ func extractMeta(path string) taskMeta {
 				if v, ok := strings.CutPrefix(line, "priority:"); ok {
 					switch strings.TrimSpace(v) {
 					case "high":
-						meta.Priority = PriorityHigh
+						meta.Priority = task.PriorityHigh
 					case "low":
-						meta.Priority = PriorityLow
+						meta.Priority = task.PriorityLow
 					}
 				} else if v, ok := strings.CutPrefix(line, "effort:"); ok {
-					meta.Effort = ParseEffort(v)
+					meta.Effort = task.ParseEffort(v)
 				} else if v, ok := strings.CutPrefix(line, "summary:"); ok {
 					meta.Summary = strings.TrimSpace(v)
 				}
@@ -452,12 +383,12 @@ var (
 )
 
 // taskBadge returns a priority+effort indicator like "↑L" or "–M".
-func taskBadge(p Priority, e Effort) string {
+func taskBadge(p task.Priority, e task.Effort) string {
 	var pri string
 	switch p {
-	case PriorityHigh:
+	case task.PriorityHigh:
 		pri = stylePriHigh.Render("↑")
-	case PriorityLow:
+	case task.PriorityLow:
 		pri = stylePriLow.Render("↓")
 	default:
 		pri = " "
@@ -466,11 +397,11 @@ func taskBadge(p Priority, e Effort) string {
 	label := fmt.Sprintf("%-2s", e.String())
 	var eff string
 	switch e {
-	case EffortS:
+	case task.EffortS:
 		eff = styleEffS.Render(label)
-	case EffortL:
+	case task.EffortL:
 		eff = styleEffL.Render(label)
-	case EffortXL:
+	case task.EffortXL:
 		eff = styleEffXL.Render(label)
 	default:
 		eff = styleEffM.Render(label)
@@ -479,15 +410,15 @@ func taskBadge(p Priority, e Effort) string {
 	return pri + eff
 }
 
-func statusPresentation(s Status) (icon string, header lipgloss.Style, task lipgloss.Style) {
+func statusPresentation(s task.Status) (icon string, header lipgloss.Style, tsk lipgloss.Style) {
 	switch s {
-	case InProgress:
+	case task.InProgress:
 		return "▶", styleInProgress, styleInProgress
-	case Todo:
+	case task.Todo:
 		return "○", styleTodoHeader, styleTodo
-	case Backlog:
+	case task.Backlog:
 		return "◇", styleBacklogHdr, styleBacklog
-	case Done:
+	case task.Done:
 		return "✓", styleDoneHeader, styleDone
 	}
 	return "", styleTodo, styleTodo
@@ -522,8 +453,8 @@ func renderMarkdown(styleOpt glamour.TermRendererOption, content string, width i
 
 type tskModel struct {
 	root        string
-	allTasks    []Task
-	filtered    []Task
+	allTasks    []task.Task
+	filtered    []task.Task
 	cursor      int
 	filter      Filter
 	viewing     bool
@@ -556,17 +487,17 @@ func (m *tskModel) refreshAfterChange(path string) {
 
 func (m *tskModel) applyFilter() {
 	m.filtered = nil
-	for _, status := range []Status{InProgress, Todo, Backlog, Done} {
-		if m.filter == FilterActive && (status == Done || status == Backlog) {
+	for _, status := range []task.Status{task.InProgress, task.Todo, task.Backlog, task.Done} {
+		if m.filter == FilterActive && (status == task.Done || status == task.Backlog) {
 			continue
 		}
-		if m.filter == FilterNoDone && status == Done {
+		if m.filter == FilterNoDone && status == task.Done {
 			continue
 		}
-		if m.filter == FilterBacklog && status != Backlog {
+		if m.filter == FilterBacklog && status != task.Backlog {
 			continue
 		}
-		if m.filter == FilterDone && status != Done {
+		if m.filter == FilterDone && status != task.Done {
 			continue
 		}
 		start := len(m.filtered)
@@ -576,12 +507,12 @@ func (m *tskModel) applyFilter() {
 			}
 		}
 		group := m.filtered[start:]
-		if status == Done {
-			slices.SortFunc(group, func(a, b Task) int {
+		if status == task.Done {
+			slices.SortFunc(group, func(a, b task.Task) int {
 				return b.ModTime.Compare(a.ModTime)
 			})
 		} else {
-			slices.SortStableFunc(group, func(a, b Task) int {
+			slices.SortStableFunc(group, func(a, b task.Task) int {
 				return int(a.Priority) - int(b.Priority)
 			})
 		}
@@ -598,7 +529,7 @@ type tskLayout struct {
 	lineW      int
 }
 
-func computeTskLayout(tasks []Task, cursorCol bool) tskLayout {
+func computeTskLayout(tasks []task.Task, cursorCol bool) tskLayout {
 	var l tskLayout
 	for _, t := range tasks {
 		l.maxProjLen = max(l.maxProjLen, len(t.Project))
@@ -759,20 +690,20 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "1", "2", "3":
 		if len(m.filtered) > 0 {
-			task := m.filtered[m.cursor]
-			pri := map[string]Priority{"1": PriorityHigh, "2": PriorityNormal, "3": PriorityLow}[msg.String()]
-			if task.Priority != pri {
-				priStr := map[Priority]string{PriorityHigh: "high", PriorityNormal: "normal", PriorityLow: "low"}[pri]
-				_ = setTaskField(task.Path, "priority", priStr)
-				(&m).refreshAfterChange(task.Path)
+			t := m.filtered[m.cursor]
+			pri := map[string]task.Priority{"1": task.PriorityHigh, "2": task.PriorityNormal, "3": task.PriorityLow}[msg.String()]
+			if t.Priority != pri {
+				priStr := map[task.Priority]string{task.PriorityHigh: "high", task.PriorityNormal: "normal", task.PriorityLow: "low"}[pri]
+				_ = setTaskField(t.Path, "priority", priStr)
+				(&m).refreshAfterChange(t.Path)
 			}
 		}
 	case "s":
 		if len(m.filtered) > 0 {
-			task := m.filtered[m.cursor]
-			next := map[Effort]Effort{EffortS: EffortM, EffortM: EffortL, EffortL: EffortXL, EffortXL: EffortS}[task.Effort]
-			_ = setTaskField(task.Path, "effort", next.String())
-			(&m).refreshAfterChange(task.Path)
+			t := m.filtered[m.cursor]
+			next := map[task.Effort]task.Effort{task.EffortS: task.EffortM, task.EffortM: task.EffortL, task.EffortL: task.EffortXL, task.EffortXL: task.EffortS}[t.Effort]
+			_ = setTaskField(t.Path, "effort", next.String())
+			(&m).refreshAfterChange(t.Path)
 		}
 	case "e":
 		return m, m.openEditor()
@@ -815,15 +746,15 @@ func (m tskModel) viewList() string {
 	}
 
 	type tskEntry struct {
-		task  Task
+		task  task.Task
 		index int
 	}
 	type tskGroup struct {
 		tasks []tskEntry
 	}
 
-	groups := make(map[Status]*tskGroup)
-	order := []Status{}
+	groups := make(map[task.Status]*tskGroup)
+	order := []task.Status{}
 	for i, t := range m.filtered {
 		g, ok := groups[t.Status]
 		if !ok {
@@ -862,7 +793,7 @@ func (m tskModel) viewList() string {
 				styledDots = styleCursor.Render(dots)
 				styledAge = styleCursor.Render(age)
 				badge = styleCursor.Render(
-					map[Priority]string{PriorityHigh: "↑", PriorityNormal: " ", PriorityLow: "↓"}[entry.task.Priority] +
+					map[task.Priority]string{task.PriorityHigh: "↑", task.PriorityNormal: " ", task.PriorityLow: "↓"}[entry.task.Priority] +
 						fmt.Sprintf("%-2s", entry.task.Effort.String()))
 			} else {
 				proj = styleProject.Render(projPadded)

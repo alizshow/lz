@@ -85,12 +85,7 @@ func taskCmd() *cli.Command {
 					&cli.BoolFlag{Name: "dry-run", Aliases: []string{"n"}, Usage: "preview what would be synced"},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
-					if c.Bool("dry-run") {
-						fmt.Println("task sync: not yet implemented (dry run)")
-					} else {
-						fmt.Println("task sync: not yet implemented")
-					}
-					return nil
+					return cmd.RunTaskSync(c.Bool("dry-run"))
 				},
 			},
 		},
