@@ -21,6 +21,7 @@ type SyncEntry struct {
 	Project    string    `yaml:"project"`
 	Title      string    `yaml:"title"`
 	Effort     string    `yaml:"effort"`
+	ModTime    time.Time `yaml:"mod_time"`
 	LastSynced time.Time `yaml:"last_synced"`
 }
 

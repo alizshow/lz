@@ -57,13 +57,37 @@ func NewNotionClient(apiKey, databaseID string) *NotionClient {
 	}
 }
 
+// dateOnlyProperty serializes as {"date":{"start":"2006-01-02","end":"2006-01-02"}}.
+// The Notion API treats date-only strings (no time) as dates without timestamps.
+// The library's Date type always includes time, so we bypass it.
+type dateOnlyProperty struct {
+	Date dateOnlyRange `json:"date"`
+}
+
+type dateOnlyRange struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+func (d dateOnlyProperty) GetID() string            { return "" }
+func (d dateOnlyProperty) GetType() notionapi.PropertyType { return notionapi.PropertyTypeDate }
+
+// dateRange builds a date-only property from created→modified times.
+func dateRange(created, modified time.Time) dateOnlyProperty {
+	return dateOnlyProperty{
+		Date: dateOnlyRange{
+			Start: created.Format("2006-01-02"),
+			End:   modified.Format("2006-01-02"),
+		},
+	}
+}
+
 // Create makes a new page in the Work Log database. Returns the page ID.
-func (c *NotionClient) Create(title, project, localStatus, effort, description string) (string, error) {
+func (c *NotionClient) Create(title, project, localStatus, effort, description string, created, modified time.Time) (string, error) {
 	if !knownProjects[project] {
 		return "", fmt.Errorf("unknown Notion project %q (known: BA, Xpand, Infra, Paynura)", project)
 	}
 
-	now := notionapi.Date(time.Now())
 	props := notionapi.Properties{
 		"Task": notionapi.TitleProperty{
 			Title: []notionapi.RichText{
@@ -79,9 +103,7 @@ func (c *NotionClient) Create(title, project, localStatus, effort, description s
 		"Effort": notionapi.SelectProperty{
 			Select: notionapi.Option{Name: effort},
 		},
-		"Date": notionapi.DateProperty{
-			Date: &notionapi.DateObject{Start: &now},
-		},
+		"Date": dateRange(created, modified),
 	}
 
 	if description != "" {

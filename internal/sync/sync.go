@@ -154,6 +154,9 @@ func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global conf
 		if entry.Effort != notionEff {
 			changes = append(changes, fmt.Sprintf("effort: %s → %s", entry.Effort, notionEff))
 		}
+		if _, mtime, err := fileTimes(path); err == nil && !mtime.Truncate(time.Second).Equal(entry.ModTime.Truncate(time.Second)) {
+			changes = append(changes, "date (modified)")
+		}
 
 		if len(changes) > 0 {
 			updates = append(updates, planEntry{
@@ -266,6 +269,10 @@ func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global conf
 				Select: notionapi.Option{Name: notionEff},
 			}
 		}
+		created, modified, ftErr := fileTimes(e.Path)
+		if ftErr == nil && !modified.Truncate(time.Second).Equal(e.Entry.ModTime.Truncate(time.Second)) {
+			props["Date"] = dateRange(created, modified)
+		}
 
 		err := client.Update(e.Entry.PageID, props)
 		if err != nil {
@@ -277,6 +284,9 @@ func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global conf
 			e.Entry.Status = notionSt
 			e.Entry.Title = e.Task.Title
 			e.Entry.Effort = notionEff
+			if ftErr == nil {
+				e.Entry.ModTime = modified
+			}
 			e.Entry.LastSynced = time.Now()
 		}
 	}
@@ -289,7 +299,12 @@ func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global conf
 		notionProj := syncProject(cfg)
 		notionEff := syncEffort(e.Task, cfg)
 
-		pageID, err := client.Create(e.Task.Title, notionProj, localSt, notionEff, e.Task.Summary)
+		created, modified, err := fileTimes(e.Path)
+		if err != nil {
+			created, modified = time.Now(), time.Now()
+		}
+
+		pageID, err := client.Create(e.Task.Title, notionProj, localSt, notionEff, e.Task.Summary, created, modified)
 		if err != nil {
 			fmt.Printf("  ✗ create  %s: %v\n", e.Task.Title, err)
 			logger.Log("[ERROR] create %s: %v", e.Path, err)
@@ -302,6 +317,7 @@ func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global conf
 				Project:    notionProj,
 				Title:      e.Task.Title,
 				Effort:     notionEff,
+				ModTime:    modified,
 				LastSynced: time.Now(),
 			}
 		}
