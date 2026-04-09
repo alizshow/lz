@@ -7,7 +7,7 @@ import (
 	"aliz/lz/internal/config"
 	"aliz/lz/internal/task"
 
-	"github.com/jomei/notionapi"
+	"github.com/rclod/notion-go"
 )
 
 type action int

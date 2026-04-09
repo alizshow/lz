@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jomei/notionapi"
+	"github.com/rclod/notion-go"
 )
 
 const rateDelay = 350 * time.Millisecond
@@ -28,15 +28,15 @@ const (
 func statusOption(s string) notionapi.Option {
 	switch s {
 	case "In Progress":
-		return notionapi.Option{ID: notionapi.PropertyID(statusIDInProgress), Name: "_"}
+		return notionapi.Option{ID: notionapi.PropertyID(statusIDInProgress)}
 	case "Todo":
-		return notionapi.Option{ID: notionapi.PropertyID(statusIDTodo), Name: "_"}
+		return notionapi.Option{ID: notionapi.PropertyID(statusIDTodo)}
 	case "Backlog":
-		return notionapi.Option{ID: notionapi.PropertyID(statusIDTodo), Name: "_"}
+		return notionapi.Option{ID: notionapi.PropertyID(statusIDTodo)}
 	case "Done":
-		return notionapi.Option{ID: notionapi.PropertyID(statusIDDone), Name: "_"}
+		return notionapi.Option{ID: notionapi.PropertyID(statusIDDone)}
 	}
-	return notionapi.Option{ID: notionapi.PropertyID(statusIDTodo), Name: "_"}
+	return notionapi.Option{ID: notionapi.PropertyID(statusIDTodo)}
 }
 
 // NotionStatusID returns the Notion status option ID for a local status string.
