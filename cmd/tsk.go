@@ -43,7 +43,7 @@ func RunTaskSync(dryRun bool) error {
 	}
 	root := findRoot()
 	tasks, configs := discoverTasks(root)
-	return lzsync.RunSync(tasks, configs, globalCfg, dryRun)
+	return lzsync.RunSync(root, tasks, configs, globalCfg, dryRun)
 }
 
 // RunTaskTUI launches the interactive task browser.

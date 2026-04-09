@@ -2,6 +2,7 @@ package sync
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"aliz/lz/internal/config"
@@ -71,7 +72,7 @@ func onDelete(cfg *config.LzConfig) string {
 }
 
 // RunSync is the main sync entry point.
-func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global config.GlobalConfig, dryRun bool) error {
+func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig, global config.GlobalConfig, dryRun bool) error {
 	// Validate global config.
 	if global.Sync.Type != "notion" {
 		return fmt.Errorf("unsupported sync type %q (only \"notion\" is supported)", global.Sync.Type)
@@ -169,8 +170,11 @@ func RunSync(tasks []task.Task, configs map[string]*config.LzConfig, global conf
 		}
 	}
 
-	// Check state entries for deleted tasks.
+	// Check state entries for deleted tasks (scoped to current root).
 	for path, entry := range state.Entries {
+		if !strings.HasPrefix(path, root) {
+			continue
+		}
 		if _, exists := eligible[path]; !exists {
 			cfg := configs[entry.Project]
 			deletes = append(deletes, planEntry{
