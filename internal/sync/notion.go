@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rclod/notion-go"
@@ -83,7 +84,7 @@ func dateRange(created, modified time.Time) dateOnlyProperty {
 }
 
 // Create makes a new page in the Work Log database. Returns the page ID.
-func (c *NotionClient) Create(title, project, localStatus, effort, description string, created, modified time.Time) (string, error) {
+func (c *NotionClient) Create(title, project, scope, localStatus, effort, description string, created, modified time.Time) (string, error) {
 	if !knownProjects[project] {
 		return "", fmt.Errorf("unknown Notion project %q (known: BA, Xpand, Infra, Paynura)", project)
 	}
@@ -104,6 +105,12 @@ func (c *NotionClient) Create(title, project, localStatus, effort, description s
 			Select: notionapi.Option{Name: effort},
 		},
 		"Date": dateRange(created, modified),
+	}
+
+	if scope != "" {
+		props["Scope"] = notionapi.SelectProperty{
+			Select: notionapi.Option{Name: scope},
+		}
 	}
 
 	if description != "" {
@@ -139,11 +146,15 @@ func (c *NotionClient) Update(pageID string, props notionapi.Properties) error {
 }
 
 // Archive soft-deletes a page by setting archived=true.
+// Succeeds silently if the page is already archived.
 func (c *NotionClient) Archive(pageID string) error {
 	_, err := c.client.Page.Update(context.Background(), notionapi.PageID(pageID), &notionapi.PageUpdateRequest{
 		Archived: true,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "archived") {
+			return nil
+		}
 		return fmt.Errorf("notion archive: %w", err)
 	}
 	time.Sleep(rateDelay)

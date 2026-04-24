@@ -79,6 +79,7 @@ type Task struct {
 	Title    string
 	Filename string
 	Project  string
+	Scope    string // sub-project path relative to .lz.yml root (e.g. "kube", "launchpad")
 	Status   Status
 	Priority Priority
 	Effort   Effort

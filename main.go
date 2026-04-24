@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
-
 	"aliz/lz/cmd"
 
 	cli "github.com/urfave/cli/v3"
@@ -54,31 +52,7 @@ func taskCmd() *cli.Command {
 					)
 				},
 			},
-			{
-				Name:      "add",
-				Usage:     "add a task to backlog",
-				ArgsUsage: "<title>",
-				Action: func(ctx context.Context, c *cli.Command) error {
-					title := strings.Join(c.Args().Slice(), " ")
-					if title == "" {
-						return fmt.Errorf("title required")
-					}
-					return cmd.RunTaskAdd(title)
-				},
-			},
-			{
-				Name:      "done",
-				Usage:     "add a task to done",
-				ArgsUsage: "<title>",
-				Action: func(ctx context.Context, c *cli.Command) error {
-					title := strings.Join(c.Args().Slice(), " ")
-					if title == "" {
-						return fmt.Errorf("title required")
-					}
-					return cmd.RunTaskDone(title)
-				},
-			},
-			{
+{
 				Name:  "sync",
 				Usage: "sync tasks to Notion",
 				Flags: []cli.Flag{

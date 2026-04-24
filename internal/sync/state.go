@@ -19,6 +19,7 @@ type SyncEntry struct {
 	PageID     string    `yaml:"page_id"`
 	Status     string    `yaml:"status"`
 	Project    string    `yaml:"project"`
+	Scope      string    `yaml:"scope,omitempty"`
 	Title      string    `yaml:"title"`
 	Effort     string    `yaml:"effort"`
 	ModTime    time.Time `yaml:"mod_time"`

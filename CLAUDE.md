@@ -19,8 +19,6 @@ lz task list -d/--done     # active + done (additive)
 lz task list -a/--all      # all categories
 lz task list -x/--exclude-active  # exclude active, combine with -b/-d
 lz task list -xb           # just backlog (short flag combining)
-lz task add <title>        # add to backlog
-lz task done <title>       # add to done
 lz task sync               # sync tasks to Notion Work Log
 lz task sync -n/--dry-run  # preview sync plan without changes
 
@@ -70,7 +68,7 @@ internal/
 
 **CLI dispatch** (`main.go`): Uses `urfave/cli/v3` for subcommand routing with `UseShortOptionHandling` for POSIX-style flag combining (`-xb`). Each subcommand delegates to an exported function in `cmd/`.
 
-**Project discovery** (`internal/config/`): `Discover(root)` walks the directory tree with `filepath.WalkDir`, collecting `.lz.yml` config files and `_tasks/` directories in a single pass. Config cascades top→bottom: scalars override, lists (skip) append, `*bool` fields support nil=inherit. Hardcoded skip floor: `.git`, `node_modules`. Returns `[]Project` with resolved configs. `cmd/tsk.go` then scans each project's `_tasks/{current,todo,backlog,done}/*.md` into `[]Task`.
+**Project discovery** (`internal/config/`): `Discover(root)` walks the directory tree with a custom recursive walker (via `os.ReadDir` + `os.Stat`), collecting `.lz.yml` config files and `_tasks/` directories in a single pass. Follows symbolic links to directories, with cycle detection via resolved real-path tracking (`filepath.EvalSymlinks` on each symlink entry, skip if already visited). Config cascades top→bottom: scalars override, lists (skip) append, `*bool` fields support nil=inherit. Hardcoded skip floor: `.git`, `node_modules`. Returns `[]Project` with resolved configs. `cmd/tsk.go` then scans each project's `_tasks/{current,todo,backlog,done}/*.md` into `[]Task`.
 
 **Config split**: Per-project `.lz.yml` controls discovery (skip, max_depth, project name) and sync behavior (enabled, project mapping, effort, on_delete). Global `~/.lz/config.yml` holds provider credentials (Notion API key, database ID).
 
@@ -84,7 +82,9 @@ internal/
 
 **Task detail** (`tsk.go`): Markdown rendered async via glamour (non-blocking). Terminal style (dark/light) is detected once at startup before alt screen via `detectGlamourStyle()` (avoids OSC timeout); the renderer is recreated on enter and on terminal resize with the current width. Detail view uses full terminal width.
 
-**Notion sync** (`internal/sync/`): `RunSync` diffs local tasks (filtered by `sync.enabled` in `.lz.yml`) against `~/.lz/sync.yml` state file. Produces CREATE/UPDATE/DELETE/SKIP plan, prints it, then executes via `jomei/notionapi`. Status properties use Notion option IDs (not names) so renames in Notion UI don't break sync. State file maps absolute task file paths to Notion page IDs + last-known property values (title, status ID, project, effort). Cross-project moves are handled as delete+create. `flock(2)` prevents concurrent syncs. Per-run logs go to `~/.lz/logs/`. Global credentials in `~/.lz/config.yml`; per-project opt-in via `.lz.yml` `sync:` block (inherits through config cascade).
+**Notion sync** (`internal/sync/`): `RunSync` diffs local tasks (filtered by `sync.enabled` in `.lz.yml`) against `~/.lz/sync.yml` state file. Produces CREATE/UPDATE/DELETE/SKIP plan, prints it, then executes via `rclod/notion-go`. Status properties use Notion option IDs (not names) so renames in Notion UI don't break sync. State file maps absolute task file paths to Notion page IDs + last-known property values (title, status ID, project, scope, effort). Cross-project moves are handled as delete+create. `flock(2)` prevents concurrent syncs. Per-run logs go to `~/.lz/logs/`. Global credentials in `~/.lz/config.yml`; per-project opt-in via `.lz.yml` `sync:` block (inherits through config cascade).
+
+**Scope** (`internal/config/discover.go`): Scope is the sub-project path relative to the `.lz.yml` that defined the project/sync name. Computed automatically from filesystem structure during discovery — e.g. `infra/kube/_tasks/` → Project "Infra", Scope "kube". Root-level tasks (where `_tasks/` is at the same level as `.lz.yml`) have empty scope. Synced to Notion as a select property. New select options are created automatically by the Notion API when a new scope value appears.
 
 **UI shared** (`ui/`): `RenderTabBar` renders tab bars for both TUIs. `RenderHelp` renders faint help bars. `DotFill` generates dot-leader strings. `DetailTitle` style is shared between both detail views.
 

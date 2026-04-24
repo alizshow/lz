@@ -4,7 +4,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Project is a directory containing a _tasks/ subdirectory, paired with its
@@ -12,11 +11,12 @@ import (
 type Project struct {
 	Name   string
 	Dir    string
+	Scope  string // relative path from .lz.yml project root to _tasks/ parent (e.g. "kube")
 	Config LzConfig
 }
 
 // hardSkip directories are always skipped regardless of config.
-// Hidden dirs (.*) are also skipped unconditionally — see walk logic.
+// Hidden dirs (.*) are also skipped unconditionally.
 var hardSkip = map[string]bool{
 	"node_modules": true,
 	"target":       true,
@@ -29,116 +29,124 @@ var hardSkip = map[string]bool{
 // Discover walks root recursively, collecting .lz.yml configs and _tasks/
 // directories. Returns one Project per _tasks/ found, with fully resolved config.
 //
-// Performance: hidden dirs are skipped, hardcoded build artifact dirs are skipped,
-// and barren subtrees (no _tasks/ in any immediate child) are pruned via lookahead.
+// Symlinks to directories are followed, with cycle detection via resolved
+// real-path tracking. Hidden dirs, hardcoded artifact dirs, and barren
+// subtrees (no _tasks/ in any immediate child) are pruned.
 func Discover(root string) []Project {
 	var projects []Project
-
-	type stackEntry struct {
-		depth  int
-		config LzConfig
+	visited := map[string]bool{}
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		visited[real] = true
 	}
-	stack := []stackEntry{{depth: -1, config: LzConfig{}}}
 
-	// Load root-level .lz.yml if present (before the walk, so the root
-	// directory's own config is available when _tasks/ is encountered).
+	rootCfg := LzConfig{}
+	rootProjDir := ""
 	if cfg, err := LoadProjectConfig(filepath.Join(root, ".lz.yml")); err == nil {
-		stack = append(stack, stackEntry{depth: 0, config: Merge(stack[0].config, cfg)})
+		rootCfg = cfg
+		if cfg.Project != "" || (cfg.Sync != nil && cfg.Sync.Project != "") {
+			rootProjDir = root
+		}
 	}
 
-	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	var walk func(dir string, depth int, cfg LzConfig, projectDir string)
+	walk = func(dir string, depth int, cfg LzConfig, projectDir string) {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return filepath.SkipDir
+			return
 		}
-		if !d.IsDir() {
-			return nil
-		}
+		for _, e := range entries {
+			name := e.Name()
+			if len(name) > 0 && name[0] == '.' {
+				continue
+			}
+			path := filepath.Join(dir, name)
 
-		name := d.Name()
+			// Stat follows symlinks; filter to directories only.
+			info, err := os.Stat(path)
+			if err != nil || !info.IsDir() {
+				continue
+			}
 
-		// Skip all hidden directories (covers .git, .metals, .bloop, .gradle,
-		// .idea, .bsp, .scala-build, .dart_tool, .venv, .vscode, etc.)
-		if len(name) > 0 && name[0] == '.' && name != "." {
-			return filepath.SkipDir
-		}
+			childDepth := depth + 1
 
-		if hardSkip[name] {
-			return filepath.SkipDir
-		}
+			if cfg.MaxDepth > 0 && childDepth > cfg.MaxDepth {
+				continue
+			}
+			if hardSkip[name] || shouldSkip(name, cfg.Skip) {
+				continue
+			}
 
-		rel, _ := filepath.Rel(root, path)
-		depth := 0
-		if rel != "." {
-			depth = strings.Count(rel, string(os.PathSeparator)) + 1
-		}
+			// _tasks/ directory: register parent as project, don't descend.
+			if name == "_tasks" {
+				projectName := resolveProjectName(cfg, root, dir)
+				scope := ""
+				if projectDir != "" {
+					if rel, err := filepath.Rel(projectDir, dir); err == nil && rel != "." {
+						scope = rel
+					}
+				}
+				projects = append(projects, Project{
+					Name:   projectName,
+					Dir:    dir,
+					Scope:  scope,
+					Config: cfg,
+				})
+				continue
+			}
 
-		// Pop stack entries at or beyond current depth.
-		for len(stack) > 1 && stack[len(stack)-1].depth >= depth {
-			stack = stack[:len(stack)-1]
-		}
-		current := stack[len(stack)-1].config
+			// Cycle detection for symlinks: skip if we've already walked the
+			// target via another path.
+			if e.Type()&fs.ModeSymlink != 0 {
+				real, err := filepath.EvalSymlinks(path)
+				if err != nil {
+					continue
+				}
+				if visited[real] {
+					continue
+				}
+				visited[real] = true
+			}
 
-		// Skip directories matching config skip list.
-		if depth > 0 && shouldSkip(name, current.Skip) {
-			return filepath.SkipDir
-		}
-
-		// Respect max_depth.
-		if current.MaxDepth > 0 && depth > current.MaxDepth {
-			return filepath.SkipDir
-		}
-
-		// _tasks/ directory: register parent as project, don't descend.
-		if name == "_tasks" {
-			parentDir := filepath.Dir(path)
-			parentConfig := current
-			projectName := resolveProjectName(parentConfig, root, parentDir)
-			projects = append(projects, Project{
-				Name:   projectName,
-				Dir:    parentDir,
-				Config: parentConfig,
-			})
-			return filepath.SkipDir
-		}
-
-		// Load .lz.yml if present in this directory (skip root — already loaded).
-		hasConfig := false
-		if depth > 0 {
-			if cfg, err := LoadProjectConfig(filepath.Join(path, ".lz.yml")); err == nil {
-				current = Merge(current, cfg)
-				stack = append(stack, stackEntry{depth: depth, config: current})
+			// Resolve child config if present.
+			childCfg := cfg
+			childProjDir := projectDir
+			hasConfig := false
+			if c, err := LoadProjectConfig(filepath.Join(path, ".lz.yml")); err == nil {
+				childCfg = Merge(cfg, c)
+				if c.Project != "" || (c.Sync != nil && c.Sync.Project != "") {
+					childProjDir = path
+				}
 				hasConfig = true
 			}
-		}
 
-		// Lookahead: if this dir (not root) has no .lz.yml and no _tasks/,
-		// check if any immediate child has _tasks/. If none, prune the subtree.
-		if depth > 0 && !hasConfig {
-			if !hasTasksNearby(path) {
-				return filepath.SkipDir
+			// Lookahead prune: no config here and no _tasks/ in this dir or
+			// its immediate children means nothing to find below.
+			if !hasConfig && !hasTasksNearby(path) {
+				continue
 			}
+
+			walk(path, childDepth, childCfg, childProjDir)
 		}
+	}
 
-		return nil
-	})
-
+	walk(root, 0, rootCfg, rootProjDir)
 	return projects
 }
 
 // hasTasksNearby checks if dir itself contains _tasks/, or if any immediate
-// subdirectory of dir contains _tasks/. Prunes barren subtrees early.
+// subdirectory of dir contains _tasks/. Stats through symlinks so symlinked
+// subprojects are recognised. Prunes barren subtrees early.
 func hasTasksNearby(dir string) bool {
-	// Check dir/_tasks/ directly.
 	if _, err := os.Stat(filepath.Join(dir, "_tasks")); err == nil {
 		return true
 	}
-	// Check dir/child/_tasks/ (one level deeper).
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		info, err := os.Stat(filepath.Join(dir, e.Name()))
+		if err != nil || !info.IsDir() {
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(dir, e.Name(), "_tasks")); err == nil {

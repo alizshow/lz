@@ -56,49 +56,6 @@ func RunTaskTUI() error {
 	return err
 }
 
-// RunTaskAdd creates a new task file in _tasks/backlog/.
-func RunTaskAdd(title string) error {
-	root := findRoot()
-	dir := filepath.Join(root, "_tasks", "backlog")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	name := slugify(title) + ".md"
-	path := filepath.Join(dir, name)
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("task file already exists: %s", path)
-	}
-	return os.WriteFile(path, []byte("# "+title+"\n"), 0o644)
-}
-
-// RunTaskDone creates a new task file in _tasks/done/.
-func RunTaskDone(title string) error {
-	root := findRoot()
-	dir := filepath.Join(root, "_tasks", "done")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	name := slugify(title) + ".md"
-	path := filepath.Join(dir, name)
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("task file already exists: %s", path)
-	}
-	return os.WriteFile(path, []byte("# "+title+"\n"), 0o644)
-}
-
-func slugify(s string) string {
-	s = strings.ToLower(s)
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == ' ' || r == '_' || r == '-':
-			b.WriteRune('-')
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
 
 // RunTaskList prints tasks to stdout (non-interactive mode).
 // Flags are additive: base output is active (current + todo).
@@ -238,7 +195,7 @@ func discoverTasks(root string) ([]task.Task, map[string]*config.LzConfig) {
 		for _, d := range dirs {
 			dir := filepath.Join(tasksDir, d.name)
 			if files, err := os.ReadDir(dir); err == nil {
-				scanTaskDir(dir, d.status, p.Name, files, &tasks)
+				scanTaskDir(dir, d.status, p.Name, p.Scope, files, &tasks)
 			} else if d.status == task.InProgress {
 				// Fallback: support legacy current.md single file
 				cur := filepath.Join(tasksDir, "current.md")
@@ -248,6 +205,7 @@ func discoverTasks(root string) ([]task.Task, map[string]*config.LzConfig) {
 						Title:    meta.Title,
 						Filename: "current.md",
 						Project:  p.Name,
+						Scope:    p.Scope,
 						Status:   task.InProgress,
 						Priority: meta.Priority,
 						Path:     cur,
@@ -261,7 +219,7 @@ func discoverTasks(root string) ([]task.Task, map[string]*config.LzConfig) {
 	return tasks, configs
 }
 
-func scanTaskDir(dir string, status task.Status, project string, files []os.DirEntry, tasks *[]task.Task) {
+func scanTaskDir(dir string, status task.Status, project, scope string, files []os.DirEntry, tasks *[]task.Task) {
 	for _, f := range files {
 		if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
 			continue
@@ -277,6 +235,7 @@ func scanTaskDir(dir string, status task.Status, project string, files []os.DirE
 			Title:    meta.Title,
 			Filename: f.Name(),
 			Project:  project,
+			Scope:    scope,
 			Status:   status,
 			Priority: meta.Priority,
 			Effort:   meta.Effort,

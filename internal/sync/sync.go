@@ -63,6 +63,11 @@ func syncEffort(t *task.Task, cfg *config.LzConfig) string {
 	return e
 }
 
+// syncScope returns the scope for a task (sub-project within a project).
+func syncScope(t *task.Task) string {
+	return t.Scope
+}
+
 // onDelete returns the delete strategy for a project (default: "archive").
 func onDelete(cfg *config.LzConfig) string {
 	if cfg != nil && cfg.Sync != nil && cfg.Sync.OnDelete != "" {
@@ -124,6 +129,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 		notionSt := NotionStatusID(t.Status.String())
 		notionProj := syncProject(cfg)
 		notionEff := syncEffort(t, cfg)
+		notionScope := syncScope(t)
 
 		entry, exists := state.Entries[path]
 		if !exists {
@@ -154,6 +160,9 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 		}
 		if entry.Effort != notionEff {
 			changes = append(changes, fmt.Sprintf("effort: %s → %s", entry.Effort, notionEff))
+		}
+		if entry.Scope != notionScope {
+			changes = append(changes, fmt.Sprintf("scope: %s → %s", entry.Scope, notionScope))
 		}
 		if _, mtime, err := fileTimes(path); err == nil && !mtime.Truncate(time.Second).Equal(entry.ModTime.Truncate(time.Second)) {
 			changes = append(changes, "date (modified)")
@@ -254,6 +263,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 		cfg := e.Config
 		notionSt := NotionStatusID(e.Task.Status.String())
 		notionEff := syncEffort(e.Task, cfg)
+		notionScope := syncScope(e.Task)
 
 		props := notionapi.Properties{}
 		if e.Entry.Status != notionSt {
@@ -273,6 +283,13 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 				Select: notionapi.Option{Name: notionEff},
 			}
 		}
+		if e.Entry.Scope != notionScope {
+			if notionScope != "" {
+				props["Scope"] = notionapi.SelectProperty{
+					Select: notionapi.Option{Name: notionScope},
+				}
+			}
+		}
 		created, modified, ftErr := fileTimes(e.Path)
 		if ftErr == nil && !modified.Truncate(time.Second).Equal(e.Entry.ModTime.Truncate(time.Second)) {
 			props["Date"] = dateRange(created, modified)
@@ -288,6 +305,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 			e.Entry.Status = notionSt
 			e.Entry.Title = e.Task.Title
 			e.Entry.Effort = notionEff
+			e.Entry.Scope = notionScope
 			if ftErr == nil {
 				e.Entry.ModTime = modified
 			}
@@ -302,13 +320,14 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 		notionSt := NotionStatusID(localSt)
 		notionProj := syncProject(cfg)
 		notionEff := syncEffort(e.Task, cfg)
+		notionScope := syncScope(e.Task)
 
 		created, modified, err := fileTimes(e.Path)
 		if err != nil {
 			created, modified = time.Now(), time.Now()
 		}
 
-		pageID, err := client.Create(e.Task.Title, notionProj, localSt, notionEff, e.Task.Summary, created, modified)
+		pageID, err := client.Create(e.Task.Title, notionProj, notionScope, localSt, notionEff, e.Task.Summary, created, modified)
 		if err != nil {
 			fmt.Printf("  ✗ create  %s: %v\n", e.Task.Title, err)
 			logger.Log("[ERROR] create %s: %v", e.Path, err)
@@ -319,6 +338,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 				PageID:     pageID,
 				Status:     notionSt,
 				Project:    notionProj,
+				Scope:      notionScope,
 				Title:      e.Task.Title,
 				Effort:     notionEff,
 				ModTime:    modified,
