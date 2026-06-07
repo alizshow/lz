@@ -76,6 +76,7 @@ func ParseEffort(s string) Effort {
 
 // Task is a single task file discovered from a _tasks/ directory.
 type Task struct {
+	ID       string // stable identity from frontmatter; assigned lazily on first sync
 	Title    string
 	Filename string
 	Project  string
