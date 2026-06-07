@@ -22,6 +22,7 @@ const (
 
 type planEntry struct {
 	Action  action
+	ID      string
 	Path    string
 	Task    *task.Task
 	Entry   *SyncEntry
@@ -110,87 +111,103 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 	defer logger.Close()
 	logger.Log("sync started (dry_run=%v)", dryRun)
 
-	// Build eligible task set (only projects with sync enabled).
+	// Resolve IDs for all eligible tasks first so the state migration can
+	// re-key legacy entries against the same IDs we'll use to diff.
+	//
+	// Tasks without an ID in frontmatter get one minted here:
+	//   - real run: written to frontmatter via EnsureID
+	//   - dry run:  ephemeral, in-memory only
 	eligible := make(map[string]*task.Task)
+	pathToID := make(map[string]string)
+	var idsWritten int
 	for i := range tasks {
 		t := &tasks[i]
 		cfg := configs[t.Project]
-		if syncEnabled(cfg) && syncProject(cfg) != "" {
-			eligible[t.Path] = t
+		if !syncEnabled(cfg) || syncProject(cfg) == "" {
+			continue
 		}
+		if t.Status == task.Backlog {
+			continue
+		}
+		if t.ID == "" {
+			if dryRun {
+				t.ID = task.NewID()
+			} else {
+				id, wrote, err := task.EnsureID(t.Path)
+				if err != nil {
+					return fmt.Errorf("assign id to %s: %w", t.Path, err)
+				}
+				t.ID = id
+				if wrote {
+					idsWritten++
+				}
+			}
+		}
+		eligible[t.ID] = t
+		pathToID[t.Path] = t.ID
+	}
+
+	if err := guardEmptyEligible(eligible, state, root); err != nil {
+		return err
+	}
+
+	// Migrate legacy path-keyed state entries to id-keyed (scoped to root).
+	migRep := state.Migrate(root, pathToID, task.NewID)
+	if migRep.Rekeyed > 0 || idsWritten > 0 {
+		fmt.Printf("  Migrated %d state entr%s to id-keyed (%d ids written to frontmatter, %d orphan).\n",
+			migRep.Rekeyed, plural(migRep.Rekeyed, "y", "ies"), idsWritten, migRep.OrphanEntries)
+		logger.Log("migrated state: rekeyed=%d ids_written=%d orphan=%d", migRep.Rekeyed, idsWritten, migRep.OrphanEntries)
 	}
 
 	// Build sync plan.
 	var creates, updates, deletes, skips []planEntry
 
 	// Check current tasks against state.
-	for path, t := range eligible {
+	for id, t := range eligible {
 		cfg := configs[t.Project]
-		notionSt := NotionStatusID(t.Status.String())
-		notionProj := syncProject(cfg)
-		notionEff := syncEffort(t, cfg)
-		notionScope := syncScope(t)
-
-		entry, exists := state.Entries[path]
+		entry, exists := state.Entries[id]
 		if !exists {
 			creates = append(creates, planEntry{
-				Action: actionCreate, Path: path, Task: t, Config: cfg,
+				Action: actionCreate, ID: id, Path: t.Path, Task: t, Config: cfg,
 			})
 			continue
 		}
-
-		// Check for changes.
-		var changes []string
-		if entry.Project != notionProj {
-			// Cross-project move: delete old + create new.
-			deletes = append(deletes, planEntry{
-				Action: actionDelete, Path: path, Entry: entry, Config: cfg,
-				Changes: []string{fmt.Sprintf("project: %s → %s", entry.Project, notionProj)},
-			})
-			creates = append(creates, planEntry{
-				Action: actionCreate, Path: path, Task: t, Config: cfg,
-			})
-			continue
+		changes := diffChanges(entry, t, cfg, t.Path)
+		if entry.LastPath != "" && entry.LastPath != t.Path {
+			changes = append(changes, fmt.Sprintf("path: %s → %s", entry.LastPath, t.Path))
 		}
-		if entry.Status != notionSt {
-			changes = append(changes, fmt.Sprintf("status: %s → %s", entry.Status, notionSt))
-		}
-		if entry.Title != t.Title {
-			changes = append(changes, fmt.Sprintf("title: %s → %s", entry.Title, t.Title))
-		}
-		if entry.Effort != notionEff {
-			changes = append(changes, fmt.Sprintf("effort: %s → %s", entry.Effort, notionEff))
-		}
-		if entry.Scope != notionScope {
-			changes = append(changes, fmt.Sprintf("scope: %s → %s", entry.Scope, notionScope))
-		}
-		if _, mtime, err := fileTimes(path); err == nil && !mtime.Truncate(time.Second).Equal(entry.ModTime.Truncate(time.Second)) {
-			changes = append(changes, "date (modified)")
-		}
-
 		if len(changes) > 0 {
 			updates = append(updates, planEntry{
-				Action: actionUpdate, Path: path, Task: t, Entry: entry, Config: cfg, Changes: changes,
+				Action: actionUpdate, ID: id, Path: t.Path, Task: t, Entry: entry, Config: cfg, Changes: changes,
 			})
 		} else {
 			skips = append(skips, planEntry{
-				Action: actionSkip, Path: path, Task: t, Entry: entry,
+				Action: actionSkip, ID: id, Path: t.Path, Task: t, Entry: entry,
 			})
 		}
 	}
 
-	// Check state entries for deleted tasks (scoped to current root).
-	for path, entry := range state.Entries {
-		if !strings.HasPrefix(path, root) {
+	// Check state entries for deleted tasks (scoped to current root by LastPath).
+	for id, entry := range state.Entries {
+		scopedPath := entry.LastPath
+		if scopedPath == "" || !strings.HasPrefix(scopedPath, root) {
 			continue
 		}
-		if _, exists := eligible[path]; !exists {
+		if _, exists := eligible[id]; !exists {
 			cfg := configs[entry.Project]
 			deletes = append(deletes, planEntry{
-				Action: actionDelete, Path: path, Entry: entry, Config: cfg,
+				Action: actionDelete, ID: id, Path: scopedPath, Entry: entry, Config: cfg,
 			})
 		}
 	}
+
+	// Migration heuristic: a legacy rename/move shows up in the plan as a
+	// DELETE (old path's state entry, file gone) + CREATE (new path, no
+	// state) pair. Collapse them into an UPDATE when (project, scope, title)
+	// matches exactly — this lets pre-existing renames done before the first
+	// id-keyed sync still resolve cleanly without archiving+recreating the
+	// Notion page.
+	creates, deletes, updates = collapseRenames(creates, deletes, updates, state, logger)
 
 	totalChanges := len(creates) + len(updates) + len(deletes)
 
@@ -236,7 +253,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 	}
 
 	// Execute.
-	client := NewNotionClient(global.Sync.Notion.APIKey, global.Sync.Notion.DatabaseID)
+	client := NewNotionClient(global.Sync.Notion.APIKey, global.Sync.Notion.DatabaseID, global.Sync.Notion.Projects)
 	var errors int
 
 	// Deletes first.
@@ -254,7 +271,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 			errors++
 		} else {
 			fmt.Printf("  ✓ deleted  %s\n", e.Entry.Title)
-			delete(state.Entries, e.Path)
+			delete(state.Entries, e.ID)
 		}
 	}
 
@@ -262,6 +279,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 	for _, e := range updates {
 		cfg := e.Config
 		notionSt := NotionStatusID(e.Task.Status.String())
+		notionProj := syncProject(cfg)
 		notionEff := syncEffort(e.Task, cfg)
 		notionScope := syncScope(e.Task)
 
@@ -290,6 +308,11 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 				}
 			}
 		}
+		if e.Entry.Project != notionProj && notionProj != "" {
+			props["Project"] = notionapi.SelectProperty{
+				Select: notionapi.Option{Name: notionProj},
+			}
+		}
 		created, modified, ftErr := fileTimes(e.Path)
 		if ftErr == nil && !modified.Truncate(time.Second).Equal(e.Entry.ModTime.Truncate(time.Second)) {
 			props["Date"] = dateRange(created, modified)
@@ -306,6 +329,8 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 			e.Entry.Title = e.Task.Title
 			e.Entry.Effort = notionEff
 			e.Entry.Scope = notionScope
+			e.Entry.Project = notionProj
+			e.Entry.LastPath = e.Path
 			if ftErr == nil {
 				e.Entry.ModTime = modified
 			}
@@ -334,7 +359,9 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 			errors++
 		} else {
 			fmt.Printf("  ✓ created  %s\n", e.Task.Title)
-			state.Entries[e.Path] = &SyncEntry{
+			state.Entries[e.ID] = &SyncEntry{
+				ID:         e.ID,
+				LastPath:   e.Path,
 				PageID:     pageID,
 				Status:     notionSt,
 				Project:    notionProj,
@@ -361,6 +388,140 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 		return fmt.Errorf("%d sync errors occurred", errors)
 	}
 	return nil
+}
+
+// guardEmptyEligible refuses a sync run when no tasks are eligible but state
+// has entries scoped to root — the usual cause is running sync from a
+// subdirectory below the .lz.yml that enables it, which would silently
+// produce a mass-DELETE plan. See TASK_GOTCHAS.md #10.
+func guardEmptyEligible(eligible map[string]*task.Task, state *SyncState, root string) error {
+	if len(eligible) > 0 {
+		return nil
+	}
+	var inScope int
+	for _, entry := range state.Entries {
+		if entry.LastPath != "" && strings.HasPrefix(entry.LastPath, root) {
+			inScope++
+		}
+	}
+	if inScope == 0 {
+		return nil
+	}
+	return fmt.Errorf("no project with sync enabled was discovered under %s, "+
+		"but %d state entr%s scoped here would be marked for deletion. "+
+		"likely cause: running sync from a subdirectory below where .lz.yml lives. "+
+		"re-run from a directory whose subtree includes the .lz.yml that enables sync",
+		root, inScope, plural(inScope, "y", "ies"))
+}
+
+// diffChanges compares a state entry against a live task and returns a list of
+// human-readable change descriptions (excluding path, which the caller may add
+// with its own source-of-truth old path).
+func diffChanges(entry *SyncEntry, t *task.Task, cfg *config.LzConfig, path string) []string {
+	notionSt := NotionStatusID(t.Status.String())
+	notionProj := syncProject(cfg)
+	notionEff := syncEffort(t, cfg)
+	notionScope := syncScope(t)
+	var changes []string
+	if entry.Status != notionSt {
+		changes = append(changes, fmt.Sprintf("status: %s → %s", entry.Status, notionSt))
+	}
+	if entry.Title != t.Title {
+		changes = append(changes, fmt.Sprintf("title: %s → %s", entry.Title, t.Title))
+	}
+	if entry.Effort != notionEff {
+		changes = append(changes, fmt.Sprintf("effort: %s → %s", entry.Effort, notionEff))
+	}
+	if entry.Scope != notionScope {
+		changes = append(changes, fmt.Sprintf("scope: %s → %s", entry.Scope, notionScope))
+	}
+	if entry.Project != notionProj {
+		changes = append(changes, fmt.Sprintf("project: %s → %s", entry.Project, notionProj))
+	}
+	if _, mtime, err := fileTimes(path); err == nil && !mtime.Truncate(time.Second).Equal(entry.ModTime.Truncate(time.Second)) {
+		changes = append(changes, "date (modified)")
+	}
+	return changes
+}
+
+// collapseRenames rewrites CREATE+DELETE pairs into UPDATEs when they match on
+// (project, scope, title) — treating them as a rename/move that predated
+// id-keyed state. state.Entries is re-keyed in place so the caller's execute
+// phase targets the surviving Notion page.
+func collapseRenames(creates, deletes, updates []planEntry, state *SyncState, logger *SyncLogger) ([]planEntry, []planEntry, []planEntry) {
+	if len(creates) == 0 || len(deletes) == 0 {
+		return creates, deletes, updates
+	}
+	// Index deletes by a composite key.
+	type key struct{ project, scope, title string }
+	delByKey := make(map[key][]int)
+	for i, d := range deletes {
+		k := key{d.Entry.Project, d.Entry.Scope, d.Entry.Title}
+		delByKey[k] = append(delByKey[k], i)
+	}
+	keepCreate := make([]bool, len(creates))
+	dropDelete := make(map[int]bool)
+	for ci, c := range creates {
+		proj := ""
+		if c.Config != nil {
+			proj = syncProject(c.Config)
+		}
+		k := key{proj, c.Task.Scope, c.Task.Title}
+		cands := delByKey[k]
+		if len(cands) != 1 { // only collapse unambiguous matches
+			keepCreate[ci] = true
+			continue
+		}
+		di := cands[0]
+		if dropDelete[di] {
+			keepCreate[ci] = true
+			continue
+		}
+		dropDelete[di] = true
+		delByKey[k] = nil
+
+		// Re-key state entry under the CREATE's id, reusing the Notion page.
+		d := deletes[di]
+		entry := d.Entry
+		delete(state.Entries, d.ID)
+		entry.ID = c.ID
+		entry.LastPath = c.Path
+		state.Entries[c.ID] = entry
+
+		changes := diffChanges(entry, c.Task, c.Config, c.Path)
+		if d.Path != c.Path {
+			changes = append(changes, fmt.Sprintf("path: %s → %s", d.Path, c.Path))
+		}
+		if len(changes) == 0 {
+			changes = append(changes, "rematched from legacy entry")
+		}
+		updates = append(updates, planEntry{
+			Action: actionUpdate, ID: c.ID, Path: c.Path, Task: c.Task, Entry: entry, Config: c.Config, Changes: changes,
+		})
+		if logger != nil {
+			logger.Log("rename-collapse: %s → %s (id=%s page=%s)", d.Path, c.Path, c.ID, entry.PageID)
+		}
+	}
+	newCreates := creates[:0:0]
+	for i, c := range creates {
+		if keepCreate[i] {
+			newCreates = append(newCreates, c)
+		}
+	}
+	newDeletes := deletes[:0:0]
+	for i, d := range deletes {
+		if !dropDelete[i] {
+			newDeletes = append(newDeletes, d)
+		}
+	}
+	return newCreates, newDeletes, updates
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func joinChanges(changes []string) string {

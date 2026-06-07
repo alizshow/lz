@@ -35,10 +35,14 @@ type GlobalSyncConfig struct {
 	Notion *NotionConfig `yaml:"notion,omitempty"`
 }
 
-// NotionConfig holds Notion API credentials.
+// NotionConfig holds Notion API credentials and the allowlist of project
+// names accepted by the Project select. Empty Projects means accept any —
+// useful for first-time setup or single-project users; populate it once you
+// want a guard against typos creating junk select options.
 type NotionConfig struct {
-	APIKey     string `yaml:"api_key"`
-	DatabaseID string `yaml:"database_id"`
+	APIKey     string   `yaml:"api_key"`
+	DatabaseID string   `yaml:"database_id"`
+	Projects   []string `yaml:"projects,omitempty"`
 }
 
 // LoadProjectConfig reads and unmarshals a single .lz.yml file.

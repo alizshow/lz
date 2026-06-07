@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,10 +12,6 @@ import (
 
 const rateDelay = 350 * time.Millisecond
 
-// Known Notion Project select options. Create fails if project not in this set.
-var knownProjects = map[string]bool{
-	"BA": true, "Xpand": true, "Infra": true, "Paynura": true,
-}
 
 // Notion status option IDs (stable across renames).
 const (
@@ -46,16 +43,29 @@ func NotionStatusID(s string) string {
 }
 
 // NotionClient wraps the Notion API client for Work Log operations.
+//
+// projects, if non-empty, is the allowlist of project names accepted by
+// Create. Empty means "accept anything" — Notion auto-creates select options
+// on first use, so the guard exists only to catch typos that would otherwise
+// silently spawn junk options.
 type NotionClient struct {
 	client     *notionapi.Client
 	databaseID notionapi.DatabaseID
+	projects   map[string]bool
 }
 
-func NewNotionClient(apiKey, databaseID string) *NotionClient {
-	return &NotionClient{
+func NewNotionClient(apiKey, databaseID string, projects []string) *NotionClient {
+	c := &NotionClient{
 		client:     notionapi.NewClient(notionapi.Token(apiKey)),
 		databaseID: notionapi.DatabaseID(databaseID),
 	}
+	if len(projects) > 0 {
+		c.projects = make(map[string]bool, len(projects))
+		for _, p := range projects {
+			c.projects[p] = true
+		}
+	}
+	return c
 }
 
 // dateOnlyProperty serializes as {"date":{"start":"2006-01-02","end":"2006-01-02"}}.
@@ -85,8 +95,8 @@ func dateRange(created, modified time.Time) dateOnlyProperty {
 
 // Create makes a new page in the Work Log database. Returns the page ID.
 func (c *NotionClient) Create(title, project, scope, localStatus, effort, description string, created, modified time.Time) (string, error) {
-	if !knownProjects[project] {
-		return "", fmt.Errorf("unknown Notion project %q (known: BA, Xpand, Infra, Paynura)", project)
+	if c.projects != nil && !c.projects[project] {
+		return "", fmt.Errorf("unknown Notion project %q (allowed: %s — set sync.notion.projects in ~/.lz/config.yml to change)", project, strings.Join(sortedKeys(c.projects), ", "))
 	}
 
 	props := notionapi.Properties{
@@ -143,6 +153,23 @@ func (c *NotionClient) Update(pageID string, props notionapi.Properties) error {
 	}
 	time.Sleep(rateDelay)
 	return nil
+}
+
+// UpdateDate sets the Date property to <d, d> (collapsed range) on an existing page.
+func (c *NotionClient) UpdateDate(pageID string, d time.Time) error {
+	return c.Update(pageID, notionapi.Properties{
+		"Date": dateRange(d, d),
+	})
+}
+
+// sortedKeys returns a stable list of keys for error messages.
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Archive soft-deletes a page by setting archived=true.
