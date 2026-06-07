@@ -45,6 +45,60 @@ func RunTaskSync(dryRun bool) error {
 	return lzsync.RunSync(root, tasks, configs, globalCfg, dryRun)
 }
 
+// taskSubdirs are the four lifecycle stages, each a subdirectory of _tasks/.
+var taskSubdirs = []string{"backlog", "todo", "current", "done"}
+
+// RunTaskSetup creates a _tasks/ scaffold (the four lifecycle subdirs) at path,
+// defaulting to the current working directory. Idempotent: existing dirs are
+// left untouched and reported as already present.
+func RunTaskSetup(path string) error {
+	if path == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve cwd: %w", err)
+		}
+		path = cwd
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve %q: %w", path, err)
+	}
+	if info, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("%s does not exist", abs)
+	} else if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", abs)
+	}
+
+	tasksDir := filepath.Join(abs, "_tasks")
+	var created, existed int
+	for _, sub := range taskSubdirs {
+		dir := filepath.Join(tasksDir, sub)
+		if _, err := os.Stat(dir); err == nil {
+			existed++
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+		created++
+	}
+
+	switch {
+	case created == 0:
+		fmt.Printf("_tasks/ already set up at %s\n", tasksDir)
+	case existed == 0:
+		fmt.Printf("Created _tasks/{%s} at %s\n", strings.Join(taskSubdirs, ","), tasksDir)
+	default:
+		suffix := "s"
+		if created == 1 {
+			suffix = ""
+		}
+		fmt.Printf("Created %d missing subdir%s under %s (%d already present)\n",
+			created, suffix, tasksDir, existed)
+	}
+	return nil
+}
+
 // RunTaskTUI launches the interactive task browser.
 func RunTaskTUI() error {
 	root := findRoot()

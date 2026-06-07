@@ -8,13 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `lz` is a personal CLI toolkit written in Go. Two command groups:
 
-- `lz task` — Task browser TUI + subcommands (list, add, done, sync)
+- `lz task` — Task browser TUI + subcommands (setup, list, add, done, sync)
 - `lz git` — Multi-repo git status TUI + subcommands (status, commits, stash)
 
 ### Commands
 
 ```
 lz task                    # TUI browser (default)
+lz task setup [path]       # scaffold _tasks/{backlog,todo,current,done} (path defaults to cwd)
 lz task list               # active tasks (current + todo)
 lz task list -b/--backlog  # active + backlog (additive)
 lz task list -d/--done     # active + done (additive)

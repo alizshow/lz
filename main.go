@@ -35,6 +35,14 @@ func taskCmd() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			{
+				Name:      "setup",
+				Usage:     "scaffold a _tasks/ directory and its lifecycle subdirs",
+				ArgsUsage: "[path]",
+				Action: func(ctx context.Context, c *cli.Command) error {
+					return cmd.RunTaskSetup(c.Args().First())
+				},
+			},
+			{
 				Name:  "list",
 				Usage: "list tasks (active by default, flags add categories)",
 				Flags: []cli.Flag{
