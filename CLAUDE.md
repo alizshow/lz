@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Before touching `cmd/tsk.go`, `internal/task/`, or `internal/sync/`, read [`TASK_GOTCHAS.md`](./TASK_GOTCHAS.md).** Each entry there is a one-time lesson from a real bug in the task code path — rewriting frontmatter, migrating sync state, handling dry-run, and so on. Do this first, before anything else in that subtree.
+
 ## Project
 
 `lz` is a personal CLI toolkit written in Go. Two command groups:
@@ -70,9 +72,11 @@ internal/
 
 **Project discovery** (`internal/config/`): `Discover(root)` walks the directory tree with a custom recursive walker (via `os.ReadDir` + `os.Stat`), collecting `.lz.yml` config files and `_tasks/` directories in a single pass. Follows symbolic links to directories, with cycle detection via resolved real-path tracking (`filepath.EvalSymlinks` on each symlink entry, skip if already visited). Config cascades top→bottom: scalars override, lists (skip) append, `*bool` fields support nil=inherit. Hardcoded skip floor: `.git`, `node_modules`. Returns `[]Project` with resolved configs. `cmd/tsk.go` then scans each project's `_tasks/{current,todo,backlog,done}/*.md` into `[]Task`.
 
-**Config split**: Per-project `.lz.yml` controls discovery (skip, max_depth, project name) and sync behavior (enabled, project mapping, effort, on_delete). Global `~/.lz/config.yml` holds provider credentials (Notion API key, database ID).
+**Config split**: Per-project `.lz.yml` controls discovery (skip, max_depth, project name) and sync behavior (enabled, project mapping, effort, on_delete). Global `~/.lz/config.yml` holds provider credentials (Notion API key, database ID) and the optional `sync.notion.projects` allowlist that guards against typos creating new Notion select options.
 
 **Task discovery** (`tsk.go`): `findRoot` walks up looking for `.lz.yml` or `_tasks/` dir co-located with `justfile`/`CLAUDE.md` (prints stderr hint if not found). `discoverTasks` delegates to `config.Discover` for recursive project finding, then scans each project's task dirs. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`). Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
+
+**Title extraction** (`tsk.go:extractMeta`): Falls back through H1 → frontmatter `summary:` → first H2 → filename stem, skipping lines inside fenced code blocks. Sub-headings (`##` and below) are last-resort because they're often section markers (`## Status`, `## Plan`) that masquerade as titles when no real title exists.
 
 **Task list** (`tsk.go`): `RunTaskList` uses additive flags — base output is active (current + todo), `-b` adds backlog, `-d` adds done, `-a` adds both, `-x` excludes active. Filter is a `map[Status]bool` inclusion set.
 
