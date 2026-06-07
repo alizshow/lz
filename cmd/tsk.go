@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"cmp"
 	"fmt"
 	"os"
@@ -39,7 +38,7 @@ const (
 func RunTaskSync(dryRun bool) error {
 	globalCfg, err := config.LoadGlobalConfig()
 	if err != nil {
-		return fmt.Errorf("load ~/.lz/config.yml: %w\n\nCreate it with:\n  mkdir -p ~/.lz\n  cat > ~/.lz/config.yml << 'EOF'\n  sync:\n    type: notion\n    notion:\n      api_key: ntn_...\n      database_id: YOUR_DATABASE_ID\n  EOF", err)
+		return fmt.Errorf("load ~/.lz/config.yml: %w\n\nCreate it with:\n  mkdir -p ~/.lz\n  cat > ~/.lz/config.yml << 'EOF'\n  sync:\n    type: notion\n    notion:\n      api_key: ntn_...\n      database_id: YOUR_DATABASE_ID\n      # Optional: allowlist of Project select values. Empty = accept any.\n      # projects: [BA, Xpand, Infra]\n  EOF", err)
 	}
 	root := findRoot()
 	tasks, configs := discoverTasks(root)
@@ -202,6 +201,7 @@ func discoverTasks(root string) ([]task.Task, map[string]*config.LzConfig) {
 				if info, err := os.Stat(cur); err == nil {
 					meta := extractMeta(cur)
 					tasks = append(tasks, task.Task{
+						ID:       meta.ID,
 						Title:    meta.Title,
 						Filename: "current.md",
 						Project:  p.Name,
@@ -232,6 +232,7 @@ func scanTaskDir(dir string, status task.Status, project, scope string, files []
 		}
 		meta := extractMeta(fp)
 		*tasks = append(*tasks, task.Task{
+			ID:       meta.ID,
 			Title:    meta.Title,
 			Filename: f.Name(),
 			Project:  project,
@@ -247,6 +248,7 @@ func scanTaskDir(dir string, status task.Status, project, scope string, files []
 }
 
 type taskMeta struct {
+	ID       string
 	Title    string
 	Priority task.Priority
 	Effort   task.Effort
@@ -254,63 +256,61 @@ type taskMeta struct {
 }
 
 func extractMeta(path string) taskMeta {
-	f, err := os.Open(path)
-	if err != nil {
-		return taskMeta{Title: filepath.Base(path), Priority: task.PriorityNormal, Effort: task.EffortM}
-	}
-	defer func() { _ = f.Close() }()
-
 	meta := taskMeta{Priority: task.PriorityNormal, Effort: task.EffortM}
-	scanner := bufio.NewScanner(f)
-
-	// Parse optional YAML frontmatter (--- fenced).
-	if scanner.Scan() {
-		first := scanner.Text()
-		if first == "---" {
-			for scanner.Scan() {
-				line := scanner.Text()
-				if line == "---" {
-					break
-				}
-				if v, ok := strings.CutPrefix(line, "priority:"); ok {
-					switch strings.TrimSpace(v) {
-					case "high":
-						meta.Priority = task.PriorityHigh
-					case "low":
-						meta.Priority = task.PriorityLow
-					}
-				} else if v, ok := strings.CutPrefix(line, "effort:"); ok {
-					meta.Effort = task.ParseEffort(v)
-				} else if v, ok := strings.CutPrefix(line, "summary:"); ok {
-					meta.Summary = strings.TrimSpace(v)
-				}
-			}
-		} else {
-			// First line wasn't frontmatter — check it for a heading.
-			if t, ok := strings.CutPrefix(first, "## "); ok {
-				meta.Title = t
-				return meta
-			}
-			if t, ok := strings.CutPrefix(first, "# "); ok {
-				meta.Title = t
-				return meta
-			}
-		}
+	fm, body, err := task.ReadFile(path)
+	if err != nil {
+		meta.Title = filepath.Base(path)
+		return meta
 	}
 
-	// Scan remaining lines for first heading.
-	for scanner.Scan() {
-		line := scanner.Text()
-		if t, ok := strings.CutPrefix(line, "## "); ok {
-			meta.Title = t
-			return meta
+	switch strings.TrimSpace(fm.Get("priority")) {
+	case "high":
+		meta.Priority = task.PriorityHigh
+	case "low":
+		meta.Priority = task.PriorityLow
+	}
+	if e := fm.Get("effort"); e != "" {
+		meta.Effort = task.ParseEffort(e)
+	}
+	meta.Summary = fm.Get("summary")
+	meta.ID = fm.Get("id")
+
+	// Title: H1 in the body wins; else summary from frontmatter; else first
+	// H2 (legacy fallback for files that never grew an H1); else filename
+	// stem. Lines inside fenced code blocks (``` … ```) are skipped — shell
+	// comments like `# foo` would otherwise pose as headings.
+	//
+	// Earlier the loop took whichever heading came first regardless of level,
+	// which let "## Status" claim the title role on files that have both a
+	// summary and a Status section.
+	var firstH2 string
+	inFence := false
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
 		}
 		if t, ok := strings.CutPrefix(line, "# "); ok {
-			meta.Title = t
+			meta.Title = strings.TrimSpace(t)
 			return meta
 		}
+		if firstH2 == "" {
+			if t, ok := strings.CutPrefix(line, "## "); ok {
+				firstH2 = strings.TrimSpace(t)
+			}
+		}
 	}
-
+	if meta.Summary != "" {
+		meta.Title = meta.Summary
+		return meta
+	}
+	if firstH2 != "" {
+		meta.Title = firstH2
+		return meta
+	}
 	meta.Title = strings.TrimSuffix(filepath.Base(path), ".md")
 	return meta
 }
@@ -504,52 +504,15 @@ func computeTskLayout(tasks []task.Task, cursorCol bool) tskLayout {
 	return l
 }
 
-// parseFrontmatter splits a task file into its frontmatter fields and body.
-func parseFrontmatter(content string) (fields map[string]string, body string) {
-	fields = make(map[string]string)
-	body = content
-	if !strings.HasPrefix(content, "---\n") {
-		return
-	}
-	end := strings.Index(content[4:], "\n---\n")
-	if end < 0 {
-		return
-	}
-	for _, line := range strings.Split(content[4:4+end], "\n") {
-		if k, v, ok := strings.Cut(line, ":"); ok {
-			fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
-		}
-	}
-	body = strings.TrimLeft(content[4+end+5:], "\n")
-	return
-}
-
-// writeFrontmatter rebuilds a task file with the given frontmatter fields and body.
-func writeFrontmatter(fields map[string]string, body string) string {
-	// Collect non-empty fields in a stable order.
-	order := []string{"priority", "effort", "summary"}
-	var lines []string
-	for _, k := range order {
-		if v := fields[k]; v != "" {
-			lines = append(lines, k+": "+v)
-		}
-	}
-	if len(lines) == 0 {
-		return body
-	}
-	return "---\n" + strings.Join(lines, "\n") + "\n---\n\n" + body
-}
-
 // setTaskField updates a single frontmatter field in a task file,
 // preserving all other fields.
 func setTaskField(path, key, value string) error {
-	data, err := os.ReadFile(path)
+	fm, body, err := task.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	fields, body := parseFrontmatter(string(data))
-	fields[key] = value
-	return os.WriteFile(path, []byte(writeFrontmatter(fields, body)), 0o644)
+	fm.Set(key, value)
+	return task.WriteFile(path, fm, body)
 }
 
 type editorDoneMsg struct{ err error }
