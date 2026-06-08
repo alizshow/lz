@@ -13,6 +13,7 @@ const (
 	Todo
 	Backlog
 	Done
+	Canceled // opt-in graveyard; hidden unless explicitly requested
 )
 
 func (s Status) String() string {
@@ -25,6 +26,8 @@ func (s Status) String() string {
 		return "Backlog"
 	case Done:
 		return "Done"
+	case Canceled:
+		return "Canceled"
 	}
 	return ""
 }

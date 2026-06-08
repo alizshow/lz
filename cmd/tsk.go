@@ -30,9 +30,9 @@ const (
 	FilterBacklog
 	FilterDone
 	FilterAll
-	FilterNoDone // like FilterAll but excludes Done (CLI only, not in TUI tab cycle)
+	FilterNoDone   // like FilterAll but excludes Done (CLI only, not in TUI tab cycle)
+	FilterCanceled // canceled-only; never in the tab cycle, reached by explicit toggle
 )
-
 
 // RunTaskSync syncs local tasks to Notion.
 func RunTaskSync(dryRun bool) error {
@@ -45,8 +45,10 @@ func RunTaskSync(dryRun bool) error {
 	return lzsync.RunSync(root, tasks, configs, globalCfg, dryRun)
 }
 
-// taskSubdirs are the four lifecycle stages, each a subdirectory of _tasks/.
-var taskSubdirs = []string{"backlog", "todo", "current", "done"}
+// taskSubdirs are the lifecycle stages, each a subdirectory of _tasks/. The
+// first four are the main flow; "canceled" is an optional graveyard that stays
+// hidden from the TUI tabs and list profiles unless explicitly toggled.
+var taskSubdirs = []string{"backlog", "todo", "current", "done", "canceled"}
 
 // RunTaskSetup creates a _tasks/ scaffold (the four lifecycle subdirs) at path,
 // defaulting to the current working directory. Idempotent: existing dirs are
@@ -109,11 +111,11 @@ func RunTaskTUI() error {
 	return err
 }
 
-
 // RunTaskList prints tasks to stdout (non-interactive mode).
 // Flags are additive: base output is active (current + todo).
-// -b adds backlog, -d adds done, -a adds both, -x excludes active.
-func RunTaskList(backlog, done, all, excludeActive bool) error {
+// -b adds backlog, -d adds done, -a adds both, -x excludes active,
+// -c adds canceled (never included by -a).
+func RunTaskList(backlog, done, all, excludeActive, canceled bool) error {
 	root := findRoot()
 	tasks, _ := discoverTasks(root)
 
@@ -123,6 +125,10 @@ func RunTaskList(backlog, done, all, excludeActive bool) error {
 	}
 	if done || all {
 		include[task.Done] = true
+	}
+	// Canceled stays out of -a/--all; it surfaces only on explicit -c.
+	if canceled {
+		include[task.Canceled] = true
 	}
 	if excludeActive {
 		delete(include, task.InProgress)
@@ -238,6 +244,7 @@ func discoverTasks(root string) ([]task.Task, map[string]*config.LzConfig) {
 		{"todo", task.Todo},
 		{"backlog", task.Backlog},
 		{"done", task.Done},
+		{"canceled", task.Canceled},
 	}
 
 	for _, p := range projects {
@@ -372,17 +379,19 @@ func extractMeta(path string) taskMeta {
 // ── Styles ──
 
 var (
-	styleInProgress = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
-	styleTodo       = lipgloss.NewStyle()
-	styleTodoHeader = lipgloss.NewStyle().Bold(true)
-	styleBacklog    = ui.Faint
-	styleBacklogHdr = ui.Faint.Bold(true)
-	styleDone       = ui.FaintGreen
-	styleDoneHeader = ui.FaintGreen.Bold(true)
-	styleProject    = ui.Cyan
-	styleCursor     = ui.Cursor
-	styleDots       = ui.Faint
-	styleAge        = ui.Faint
+	styleInProgress  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3"))
+	styleTodo        = lipgloss.NewStyle()
+	styleTodoHeader  = lipgloss.NewStyle().Bold(true)
+	styleBacklog     = ui.Faint
+	styleBacklogHdr  = ui.Faint.Bold(true)
+	styleDone        = ui.FaintGreen
+	styleDoneHeader  = ui.FaintGreen.Bold(true)
+	styleCanceled    = ui.Faint.Strikethrough(true)
+	styleCanceledHdr = ui.Faint.Bold(true)
+	styleProject     = ui.Cyan
+	styleCursor      = ui.Cursor
+	styleDots        = ui.Faint
+	styleAge         = ui.Faint
 )
 
 var (
@@ -433,6 +442,8 @@ func statusPresentation(s task.Status) (icon string, header lipgloss.Style, tsk 
 		return "◇", styleBacklogHdr, styleBacklog
 	case task.Done:
 		return "✓", styleDoneHeader, styleDone
+	case task.Canceled:
+		return "✗", styleCanceledHdr, styleCanceled
 	}
 	return "", styleTodo, styleTodo
 }
@@ -500,7 +511,12 @@ func (m *tskModel) refreshAfterChange(path string) {
 
 func (m *tskModel) applyFilter() {
 	m.filtered = nil
-	for _, status := range []task.Status{task.InProgress, task.Todo, task.Backlog, task.Done} {
+	for _, status := range []task.Status{task.InProgress, task.Todo, task.Backlog, task.Done, task.Canceled} {
+		// Canceled is a graveyard: visible only in its dedicated filter, and
+		// that filter shows nothing else.
+		if (status == task.Canceled) != (m.filter == FilterCanceled) {
+			continue
+		}
 		if m.filter == FilterActive && (status == task.Done || status == task.Backlog) {
 			continue
 		}
@@ -520,7 +536,7 @@ func (m *tskModel) applyFilter() {
 			}
 		}
 		group := m.filtered[start:]
-		if status == task.Done {
+		if status == task.Done || status == task.Canceled {
 			slices.SortFunc(group, func(a, b task.Task) int {
 				return b.ModTime.Compare(a.ModTime)
 			})
@@ -639,10 +655,25 @@ func (m tskModel) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 		}
 	case "tab":
-		m.filter = (m.filter + 1) % 4
+		if m.filter == FilterCanceled {
+			m.filter = FilterActive
+		} else {
+			m.filter = (m.filter + 1) % 4
+		}
 		m.applyFilter()
 	case "shift+tab":
-		m.filter = (m.filter + 3) % 4
+		if m.filter == FilterCanceled {
+			m.filter = FilterAll
+		} else {
+			m.filter = (m.filter + 3) % 4
+		}
+		m.applyFilter()
+	case "c":
+		if m.filter == FilterCanceled {
+			m.filter = FilterActive
+		} else {
+			m.filter = FilterCanceled
+		}
 		m.applyFilter()
 	case "enter", "right", "l":
 		if len(m.filtered) > 0 {
@@ -713,7 +744,15 @@ func (m tskModel) View() string {
 func (m tskModel) viewList() string {
 	var b strings.Builder
 
-	b.WriteString(ui.RenderTabBar([]string{"Active", "Backlog", "Done", "All"}, int(m.filter)))
+	tabs := []string{"Active", "Backlog", "Done", "All"}
+	active := int(m.filter)
+	// The canceled view is off the normal tab cycle; surface it as a tab only
+	// while it's the one in use, so the bar stays four tabs in normal operation.
+	if m.filter == FilterCanceled {
+		tabs = append(tabs, "Canceled")
+		active = len(tabs) - 1
+	}
+	b.WriteString(ui.RenderTabBar(tabs, active))
 	b.WriteString("\n\n")
 
 	if len(m.filtered) == 0 {
@@ -819,7 +858,7 @@ func (m tskModel) viewList() string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(ui.RenderHelp("↑/↓ navigate", "→ open", "e edit", "1/2/3 priority", "tab filter", "q quit"))
+	b.WriteString(ui.RenderHelp("↑/↓ navigate", "→ open", "e edit", "1/2/3 priority", "tab filter", "c canceled", "q quit"))
 
 	return b.String()
 }

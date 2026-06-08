@@ -1,18 +1,18 @@
 package main
 
 import (
+	"aliz/lz/cmd"
 	"context"
 	"fmt"
 	"os"
-	"aliz/lz/cmd"
 
 	cli "github.com/urfave/cli/v3"
 )
 
 func main() {
 	root := &cli.Command{
-		Name:                  "lz",
-		Usage:                 "personal CLI toolkit",
+		Name:                   "lz",
+		Usage:                  "personal CLI toolkit",
 		UseShortOptionHandling: true,
 		Commands: []*cli.Command{
 			taskCmd(),
@@ -52,6 +52,7 @@ func taskCmd() *cli.Command {
 					&cli.BoolFlag{Name: "done", Aliases: []string{"d"}, Usage: "include done tasks"},
 					&cli.BoolFlag{Name: "all", Aliases: []string{"a"}, Usage: "include all categories"},
 					&cli.BoolFlag{Name: "exclude-active", Aliases: []string{"x"}, Usage: "exclude active (current + todo)"},
+					&cli.BoolFlag{Name: "canceled", Aliases: []string{"c"}, Usage: "include canceled tasks"},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					return cmd.RunTaskList(
@@ -59,6 +60,7 @@ func taskCmd() *cli.Command {
 						c.Bool("done"),
 						c.Bool("all"),
 						c.Bool("exclude-active"),
+						c.Bool("canceled"),
 					)
 				},
 			},

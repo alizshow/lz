@@ -126,7 +126,7 @@ func RunSync(root string, tasks []task.Task, configs map[string]*config.LzConfig
 		if !syncEnabled(cfg) || syncProject(cfg) == "" {
 			continue
 		}
-		if t.Status == task.Backlog {
+		if t.Status == task.Backlog || t.Status == task.Canceled {
 			continue
 		}
 		if t.ID == "" {

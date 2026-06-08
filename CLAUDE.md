@@ -15,13 +15,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 lz task                    # TUI browser (default)
-lz task init [path]        # scaffold _tasks/{backlog,todo,current,done} (path defaults to cwd; alias: setup)
+lz task init [path]        # scaffold _tasks/{backlog,todo,current,done,canceled} (path defaults to cwd; alias: setup)
 lz task list               # active tasks (current + todo) (aliases: l, ls)
 lz task list -b/--backlog  # active + backlog (additive)
 lz task list -d/--done     # active + done (additive)
-lz task list -a/--all      # all categories
-lz task list -x/--exclude-active  # exclude active, combine with -b/-d
+lz task list -a/--all      # all categories (does NOT include canceled)
+lz task list -c/--canceled # active + canceled (additive; canceled shows only here)
+lz task list -x/--exclude-active  # exclude active, combine with -b/-d/-c
 lz task list -xb           # just backlog (short flag combining)
+lz task list -xc           # just canceled
 lz task sync               # sync tasks to Notion Work Log (alias: s)
 lz task sync -n/--dry-run  # preview sync plan without changes
 
@@ -73,15 +75,15 @@ internal/
 
 **CLI dispatch** (`main.go`): Uses `urfave/cli/v3` for subcommand routing with `UseShortOptionHandling` for POSIX-style flag combining (`-xb`). Each subcommand delegates to an exported function in `cmd/`.
 
-**Project discovery** (`internal/config/`): `Discover(root)` walks the directory tree with a custom recursive walker (via `os.ReadDir` + `os.Stat`), collecting `.lz.yml` config files and `_tasks/` directories in a single pass. Follows symbolic links to directories, with cycle detection via resolved real-path tracking (`filepath.EvalSymlinks` on each symlink entry, skip if already visited). Config cascades top→bottom: scalars override, lists (skip) append, `*bool` fields support nil=inherit. Hardcoded skip floor: `.git`, `node_modules`. Returns `[]Project` with resolved configs. `cmd/tsk.go` then scans each project's `_tasks/{current,todo,backlog,done}/*.md` into `[]Task`.
+**Project discovery** (`internal/config/`): `Discover(root)` walks the directory tree with a custom recursive walker (via `os.ReadDir` + `os.Stat`), collecting `.lz.yml` config files and `_tasks/` directories in a single pass. Follows symbolic links to directories, with cycle detection via resolved real-path tracking (`filepath.EvalSymlinks` on each symlink entry, skip if already visited). Config cascades top→bottom: scalars override, lists (skip) append, `*bool` fields support nil=inherit. Hardcoded skip floor: `.git`, `node_modules`. Returns `[]Project` with resolved configs. `cmd/tsk.go` then scans each project's `_tasks/{current,todo,backlog,done,canceled}/*.md` into `[]Task`.
 
 **Config split**: Per-project `.lz.yml` controls discovery (skip, max_depth, project name) and sync behavior (enabled, project mapping, effort, on_delete). Global `~/.lz/config.yml` holds provider credentials (Notion API key, database ID) and the optional `sync.notion.projects` allowlist that guards against typos creating new Notion select options.
 
-**Task discovery** (`tsk.go`): `findRoot` walks up looking for `.lz.yml` or `_tasks/` dir co-located with `justfile`/`CLAUDE.md` (prints stderr hint if not found). `discoverTasks` delegates to `config.Discover` for recursive project finding, then scans each project's task dirs. Tasks have four states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`). Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
+**Task discovery** (`tsk.go`): `findRoot` walks up looking for `.lz.yml` or `_tasks/` dir co-located with `justfile`/`CLAUDE.md` (prints stderr hint if not found). `discoverTasks` delegates to `config.Discover` for recursive project finding, then scans each project's task dirs. Tasks have five states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`), and Canceled (`canceled/*.md`). Canceled is an opt-in graveyard: hidden from the TUI tabs and every list profile (including `-a`), surfaced only by explicit toggle — the TUI `c` key (shows a transient "Canceled" tab while active) or list `-c`. Canceled tasks are excluded from Notion sync, like Backlog. Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
 
 **Title extraction** (`tsk.go:extractMeta`): Falls back through H1 → frontmatter `summary:` → first H2 → filename stem, skipping lines inside fenced code blocks. Sub-headings (`##` and below) are last-resort because they're often section markers (`## Status`, `## Plan`) that masquerade as titles when no real title exists.
 
-**Task list** (`tsk.go`): `RunTaskList` uses additive flags — base output is active (current + todo), `-b` adds backlog, `-d` adds done, `-a` adds both, `-x` excludes active. Filter is a `map[Status]bool` inclusion set.
+**Task list** (`tsk.go`): `RunTaskList` uses additive flags — base output is active (current + todo), `-b` adds backlog, `-d` adds done, `-a` adds both, `-c` adds canceled (only `-c` does — `-a` excludes it), `-x` excludes active. Filter is a `map[Status]bool` inclusion set.
 
 **Shared helpers** (`tsk.go`): `statusPresentation()` maps Status → (icon, headerStyle, taskStyle) — used by both list and TUI modes. `computeTskLayout()` computes column widths shared between `RunTaskList` and `viewList`.
 
