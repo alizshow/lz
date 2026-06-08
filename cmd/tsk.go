@@ -785,7 +785,7 @@ func (m tskModel) viewList() string {
 		lines = append(lines, "")
 	}
 
-	listHeight := m.height - 3
+	listHeight := m.height - 4
 	if listHeight > 0 && len(lines) > listHeight {
 		cl := func() int {
 			n := 0
@@ -812,6 +812,12 @@ func (m tskModel) viewList() string {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
+
+	if m.cursor >= 0 && m.cursor < len(m.filtered) {
+		rel := strings.TrimPrefix(m.filtered[m.cursor].Path, m.root+"/")
+		b.WriteString(ui.Faint.Render("  " + rel))
+	}
+	b.WriteString("\n")
 
 	b.WriteString(ui.RenderHelp("↑/↓ navigate", "→ open", "e edit", "1/2/3 priority", "tab filter", "q quit"))
 

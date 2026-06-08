@@ -35,7 +35,8 @@ func taskCmd() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			{
-				Name:      "setup",
+				Name:      "init",
+				Aliases:   []string{"setup"},
 				Usage:     "scaffold a _tasks/ directory and its lifecycle subdirs",
 				ArgsUsage: "[path]",
 				Action: func(ctx context.Context, c *cli.Command) error {
@@ -43,8 +44,9 @@ func taskCmd() *cli.Command {
 				},
 			},
 			{
-				Name:  "list",
-				Usage: "list tasks (active by default, flags add categories)",
+				Name:    "list",
+				Aliases: []string{"l", "ls"},
+				Usage:   "list tasks (active by default, flags add categories)",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "backlog", Aliases: []string{"b"}, Usage: "include backlog tasks"},
 					&cli.BoolFlag{Name: "done", Aliases: []string{"d"}, Usage: "include done tasks"},
@@ -60,9 +62,10 @@ func taskCmd() *cli.Command {
 					)
 				},
 			},
-{
-				Name:  "sync",
-				Usage: "sync tasks to Notion",
+			{
+				Name:    "sync",
+				Aliases: []string{"s"},
+				Usage:   "sync tasks to Notion",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "dry-run", Aliases: []string{"n"}, Usage: "preview what would be synced"},
 				},
@@ -83,22 +86,25 @@ func gitCmd() *cli.Command {
 		},
 		Commands: []*cli.Command{
 			{
-				Name:  "status",
-				Usage: "repo status list",
+				Name:    "status",
+				Aliases: []string{"s", "st"},
+				Usage:   "repo status list",
 				Action: func(ctx context.Context, c *cli.Command) error {
 					return cmd.RunGitStatus()
 				},
 			},
 			{
-				Name:  "commits",
-				Usage: "recent commits per repo",
+				Name:    "commits",
+				Aliases: []string{"c", "log"},
+				Usage:   "recent commits per repo",
 				Action: func(ctx context.Context, c *cli.Command) error {
 					return cmd.RunGitCommits()
 				},
 			},
 			{
-				Name:  "stash",
-				Usage: "stash entries per repo",
+				Name:    "stash",
+				Aliases: []string{"z"},
+				Usage:   "stash entries per repo",
 				Action: func(ctx context.Context, c *cli.Command) error {
 					return cmd.RunGitStash()
 				},

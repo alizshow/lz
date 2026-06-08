@@ -15,21 +15,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 lz task                    # TUI browser (default)
-lz task setup [path]       # scaffold _tasks/{backlog,todo,current,done} (path defaults to cwd)
-lz task list               # active tasks (current + todo)
+lz task init [path]        # scaffold _tasks/{backlog,todo,current,done} (path defaults to cwd; alias: setup)
+lz task list               # active tasks (current + todo) (aliases: l, ls)
 lz task list -b/--backlog  # active + backlog (additive)
 lz task list -d/--done     # active + done (additive)
 lz task list -a/--all      # all categories
 lz task list -x/--exclude-active  # exclude active, combine with -b/-d
 lz task list -xb           # just backlog (short flag combining)
-lz task sync               # sync tasks to Notion Work Log
+lz task sync               # sync tasks to Notion Work Log (alias: s)
 lz task sync -n/--dry-run  # preview sync plan without changes
 
 lz git                     # TUI browser (default)
-lz git status              # repo status list
-lz git commits             # recent commits
-lz git stash               # stash entries
+lz git status              # repo status list (aliases: s, st)
+lz git commits             # recent commits (aliases: c, log)
+lz git stash               # stash entries (alias: z)
 ```
+
+Subcommand aliases are POSIX-style via urfave/cli `Aliases`. `lz task` keeps `init` as the primary scaffold command with `setup` as a back-compat alias.
 
 ## Build & Run
 
