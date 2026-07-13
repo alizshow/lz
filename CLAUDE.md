@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> Git state: **remote** (github.com/alizshow/lz). Pushed publicly — no adjacent-context or private paths in tracked files.
+
 > **Before touching `cmd/tsk.go`, `internal/task/`, or `internal/sync/`, read [`TASK_GOTCHAS.md`](./TASK_GOTCHAS.md).** Each entry there is a one-time lesson from a real bug in the task code path — rewriting frontmatter, migrating sync state, handling dry-run, and so on. Do this first, before anything else in that subtree.
 
 ## Project
@@ -93,7 +95,7 @@ internal/
 
 **Notion sync** (`internal/sync/`): `RunSync` diffs local tasks (filtered by `sync.enabled` in `.lz.yml`) against `~/.lz/sync.yml` state file. Produces CREATE/UPDATE/DELETE/SKIP plan, prints it, then executes via `rclod/notion-go`. Status properties use Notion option IDs (not names) so renames in Notion UI don't break sync. State file maps absolute task file paths to Notion page IDs + last-known property values (title, status ID, project, scope, effort). Cross-project moves are handled as delete+create. `flock(2)` prevents concurrent syncs. Per-run logs go to `~/.lz/logs/`. Global credentials in `~/.lz/config.yml`; per-project opt-in via `.lz.yml` `sync:` block (inherits through config cascade).
 
-**Scope** (`internal/config/discover.go`): Scope is the sub-project path relative to the `.lz.yml` that defined the project/sync name. Computed automatically from filesystem structure during discovery — e.g. `infra/kube/_tasks/` → Project "Infra", Scope "kube". Root-level tasks (where `_tasks/` is at the same level as `.lz.yml`) have empty scope. Synced to Notion as a select property. New select options are created automatically by the Notion API when a new scope value appears.
+**Scope** (`internal/config/discover.go`): Scope is the sub-project path relative to the `.lz.yml` that defined the project/sync name. Computed automatically from filesystem structure during discovery — e.g. `acme/api/_tasks/` → Project "Acme", Scope "api". Root-level tasks (where `_tasks/` is at the same level as `.lz.yml`) have empty scope. Synced to Notion as a select property. New select options are created automatically by the Notion API when a new scope value appears.
 
 **UI shared** (`ui/`): `RenderTabBar` renders tab bars for both TUIs. `RenderHelp` renders faint help bars. `DotFill` generates dot-leader strings. `DetailTitle` style is shared between both detail views.
 
