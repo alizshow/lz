@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -36,6 +37,27 @@ func (f *Frontmatter) Set(key, value string) {
 		}
 	}
 	f.pairs = append(f.pairs, kv{key, value})
+}
+
+// Unquote strips one level of YAML scalar quoting from v: a surrounding pair
+// of double quotes (escape handling via strconv.Unquote) or single quotes
+// (with '' collapsing to '). Unquoted values pass through unchanged, as does
+// anything that fails to unquote cleanly. Get stays raw so round-trips
+// preserve the file byte-for-byte — call this where the value is consumed
+// (display, sync), not re-emitted.
+func Unquote(v string) string {
+	if len(v) < 2 {
+		return v
+	}
+	switch {
+	case v[0] == '"' && v[len(v)-1] == '"':
+		if s, err := strconv.Unquote(v); err == nil {
+			return s
+		}
+	case v[0] == '\'' && v[len(v)-1] == '\'':
+		return strings.ReplaceAll(v[1:len(v)-1], "''", "'")
+	}
+	return v
 }
 
 // Has reports whether key is present.

@@ -153,3 +153,22 @@ func TestAtomicWrite_preservesMode(t *testing.T) {
 		t.Fatalf("mode not preserved: %v", info.Mode().Perm())
 	}
 }
+
+func TestUnquote(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`plain value`, `plain value`},
+		{`"double quoted"`, `double quoted`},
+		{`'single quoted'`, `single quoted`},
+		{`"escaped \"inner\" quotes"`, `escaped "inner" quotes`},
+		{`'it''s escaped'`, `it's escaped`},
+		{`"`, `"`},
+		{``, ``},
+		{`"mismatched'`, `"mismatched'`},
+		{`"unparseable "raw" fallback"`, `"unparseable "raw" fallback"`},
+	}
+	for _, tc := range cases {
+		if got := Unquote(tc.in); got != tc.want {
+			t.Errorf("Unquote(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

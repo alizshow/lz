@@ -333,7 +333,7 @@ func extractMeta(path string) taskMeta {
 	if e := fm.Get("effort"); e != "" {
 		meta.Effort = task.ParseEffort(e)
 	}
-	meta.Summary = fm.Get("summary")
+	meta.Summary = task.Unquote(fm.Get("summary"))
 	meta.ID = fm.Get("id")
 
 	// Title: H1 in the body wins; else summary from frontmatter; else first

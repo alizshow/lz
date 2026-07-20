@@ -23,6 +23,16 @@ func TestExtractMetaTitle(t *testing.T) {
 			want: "From Frontmatter",
 		},
 		{
+			name: "double-quoted summary loses its quotes",
+			body: "---\nsummary: \"one-liner: with a colon\"\n---\n\n## Status\n",
+			want: "one-liner: with a colon",
+		},
+		{
+			name: "single-quoted summary loses its quotes",
+			body: "---\nsummary: 'it''s quoted'\n---\n\n## Status\n",
+			want: "it's quoted",
+		},
+		{
 			name: "h2 fallback when no h1 and no summary",
 			body: "---\n---\n\n## Legacy H2 Title\n\n### sub\n",
 			want: "Legacy H2 Title",
