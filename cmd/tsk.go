@@ -3,10 +3,12 @@ package cmd
 import (
 	"cmp"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +101,191 @@ func RunTaskSetup(path string) error {
 			created, suffix, tasksDir, existed)
 	}
 	return nil
+}
+
+// newStages are the lifecycle stages a task may be created in. done/ is
+// excluded because its files are numbered at close time, and canceled/ is an
+// off-ramp — neither is a place work starts.
+var newStages = []string{"backlog", "todo", "current"}
+
+// RunTaskNew creates a task file from a title and writes its path to stdout.
+// stage/priority/effort/summary/dir are the flag values ("" where unset); only
+// the flags actually passed become frontmatter keys, so a plain invocation
+// yields a file with no frontmatter at all. When stdin is a pipe, its contents
+// are appended below the title heading.
+func RunTaskNew(title, stage, priority, effort, summary, dir string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("a task title is required: lz task new \"Some title\"")
+	}
+
+	if stage == "" {
+		stage = "backlog"
+	}
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	if !slices.Contains(newStages, stage) {
+		if slices.Contains(taskSubdirs, stage) {
+			return fmt.Errorf("cannot create a task directly in %s/ — tasks reach it by moving through the lifecycle", stage)
+		}
+		return fmt.Errorf("unknown stage %q (want one of: %s)", stage, strings.Join(newStages, ", "))
+	}
+
+	if priority != "" {
+		priority = strings.ToLower(strings.TrimSpace(priority))
+		if !slices.Contains([]string{"high", "normal", "low"}, priority) {
+			return fmt.Errorf("unknown priority %q (want one of: high, normal, low)", priority)
+		}
+	}
+	if effort != "" {
+		effort = strings.ToUpper(strings.TrimSpace(effort))
+		if !slices.Contains([]string{"S", "M", "L", "XL"}, effort) {
+			return fmt.Errorf("unknown effort %q (want one of: S, M, L, XL)", effort)
+		}
+	}
+
+	tasksDir, err := resolveTasksDir(dir)
+	if err != nil {
+		return err
+	}
+	stageDir := filepath.Join(tasksDir, stage)
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", stageDir, err)
+	}
+
+	body := "# " + title + "\n"
+	piped, err := readPipedStdin()
+	if err != nil {
+		return err
+	}
+	if piped != "" {
+		body += "\n" + piped
+	}
+
+	var fm task.Frontmatter
+	if priority != "" {
+		fm.Set("priority", priority)
+	}
+	if effort != "" {
+		fm.Set("effort", effort)
+	}
+	if summary != "" {
+		fm.Set("summary", strconv.Quote(summary))
+	}
+
+	path, err := claimTaskPath(stageDir, slugify(title))
+	if err != nil {
+		return err
+	}
+	if err := task.WriteFile(path, fm, body); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Println(path)
+	return nil
+}
+
+// resolveTasksDir returns the _tasks/ directory a new task belongs in. With an
+// explicit dir it must already hold one (or be one); otherwise the nearest
+// _tasks/ at or above cwd wins. Unlike findRoot this never falls back to cwd —
+// creating a stray _tasks/ tree because the user was in the wrong directory is
+// worse than an error.
+func resolveTasksDir(dir string) (string, error) {
+	if dir != "" {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return "", fmt.Errorf("resolve %q: %w", dir, err)
+		}
+		if filepath.Base(abs) == "_tasks" {
+			return abs, nil
+		}
+		tasksDir := filepath.Join(abs, "_tasks")
+		if info, err := os.Stat(tasksDir); err != nil || !info.IsDir() {
+			return "", fmt.Errorf("no _tasks/ directory at %s (create one with: lz task init %s)", abs, abs)
+		}
+		return tasksDir, nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+	for d := cwd; ; {
+		tasksDir := filepath.Join(d, "_tasks")
+		if info, err := os.Stat(tasksDir); err == nil && info.IsDir() {
+			return tasksDir, nil
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	return "", fmt.Errorf("no _tasks/ directory found at or above %s (create one with: lz task init)", cwd)
+}
+
+// readPipedStdin returns stdin's contents when it is a pipe or file, and ""
+// when it is a terminal (nothing was redirected in). The trailing newline is
+// normalized so the body always ends with exactly one.
+func readPipedStdin() (string, error) {
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice != 0 {
+		return "", nil
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	s := strings.TrimSpace(string(data))
+	if s == "" {
+		return "", nil
+	}
+	return s + "\n", nil
+}
+
+// slugify turns a title into a filename stem: lowercase, non-alphanumerics
+// collapsed to single dashes, trimmed. Falls back to "task" for titles with
+// nothing slug-able in them (e.g. all CJK or all punctuation).
+func slugify(title string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(title) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			dash = false
+		default:
+			if !dash && b.Len() > 0 {
+				b.WriteByte('-')
+				dash = true
+			}
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		return "task"
+	}
+	return s
+}
+
+// claimTaskPath creates an empty file for stem (suffixing -2, -3, … past
+// collisions) and returns its path. O_EXCL claims the name atomically, so two
+// concurrent invocations with the same title can't land on one file.
+func claimTaskPath(dir, stem string) (string, error) {
+	for n := 1; n < 1000; n++ {
+		name := stem + ".md"
+		if n > 1 {
+			name = fmt.Sprintf("%s-%d.md", stem, n)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			f.Close()
+			return path, nil
+		}
+		if !os.IsExist(err) {
+			return "", fmt.Errorf("create %s: %w", path, err)
+		}
+	}
+	return "", fmt.Errorf("too many tasks named %q in %s", stem, dir)
 }
 
 // RunTaskTUI launches the interactive task browser.

@@ -18,6 +18,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 lz task                    # TUI browser (default)
 lz task init [path]        # scaffold _tasks/{backlog,todo,current,done,canceled} (path defaults to cwd; alias: setup)
+lz task new "<title>"      # create a task file, print its path (aliases: n, add)
+  -s/--stage backlog|todo|current   # default backlog; done/canceled rejected
+  -p/--priority high|normal|low     # omitted flags write no frontmatter key
+  -e/--effort S|M|L|XL
+  -m/--summary "one-liner"
+  -C/--dir <path>                   # project whose _tasks/ to use
 lz task list               # active tasks (current + todo) (aliases: l, ls)
 lz task list -b/--backlog  # active + backlog (additive)
 lz task list -d/--done     # active + done (additive)
@@ -84,6 +90,8 @@ internal/
 **Task discovery** (`tsk.go`): `findRoot` walks up looking for `.lz.yml` or `_tasks/` dir co-located with `justfile`/`CLAUDE.md` (prints stderr hint if not found). `discoverTasks` delegates to `config.Discover` for recursive project finding, then scans each project's task dirs. Tasks have five states: InProgress (`current/*.md`), Todo (`todo/*.md`), Backlog (`backlog/*.md`), Done (`done/*.md`), and Canceled (`canceled/*.md`). Canceled is an opt-in graveyard: hidden from the TUI tabs and every list profile (including `-a`), surfaced only by explicit toggle — the TUI `c` key (shows a transient "Canceled" tab while active) or list `-c`. Canceled tasks are excluded from Notion sync, like Backlog. Tasks support optional YAML frontmatter with `priority: high|normal|low`; TUI keybinds `1/2/3` to set priority.
 
 **Title extraction** (`tsk.go:extractMeta`): Falls back through H1 → frontmatter `summary:` → first H2 → filename stem, skipping lines inside fenced code blocks. Sub-headings (`##` and below) are last-resort because they're often section markers (`## Status`, `## Plan`) that masquerade as titles when no real title exists.
+
+**Task creation** (`tsk.go:RunTaskNew`): Title is the only required input; the filename is its slug (`slugify`), collision-suffixed `-2`, `-3` via `claimTaskPath` (O_EXCL, so concurrent invocations can't collide). Only flags actually passed become frontmatter keys — a bare `lz task new` writes a file whose entire content is `# Title`, matching the "lightest thing that fits" convention. Piped stdin is appended below the title. `resolveTasksDir` walks up from cwd for the nearest `_tasks/` and, unlike `findRoot`, errors rather than falling back to cwd — a wrong-directory invocation must not scatter new `_tasks/` trees. Only stdout output is the created path, so `$EDITOR $(lz task new …)` composes.
 
 **Task list** (`tsk.go`): `RunTaskList` uses additive flags — base output is active (current + todo), `-b` adds backlog, `-d` adds done, `-a` adds both, `-c` adds canceled (only `-c` does — `-a` excludes it), `-x` excludes active. Filter is a `map[Status]bool` inclusion set.
 
